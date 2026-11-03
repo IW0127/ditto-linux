@@ -58,6 +58,7 @@ class Settings:
     auto_update_check: bool = True  # look for a new release once a day
     last_update_check: float = 0.0
     skipped_version: str = ""       # "Skip this version" in the update popup
+    auto_report: str = "ask"        # problems -> GitHub issue: ask | always | never
 
     @classmethod
     def path(cls) -> Path:

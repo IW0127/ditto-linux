@@ -242,6 +242,30 @@ def cmd_update(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    from . import report
+    details = args.message or (sys.stdin.read() if not sys.stdin.isatty() and args.stdin else "")
+    title = args.title or "Problem report"
+    problem = report.Problem(title=title, details=details or "(reported by hand)",
+                             fingerprint=report.fingerprint(title + "\n" + details) if details else
+                             __import__("hashlib").sha1(title.encode()).hexdigest()[:12])
+    if args.dry_run:
+        print(f"title: {report.sanitize(title)}\n")
+        print(report.build_body(problem))
+        return 0
+    if not args.browser and report.gh_ready():
+        try:
+            print(report.submit(problem))
+            return 0
+        except report.ReportError as e:
+            print(f"error: {e}", file=sys.stderr)
+    url = report.new_issue_url(problem)
+    print(f"Open this page to file the issue:\n{url}")
+    import webbrowser
+    webbrowser.open(url)
+    return 0
+
+
 def cmd_doctor(args) -> int:
     import os
     import shutil
@@ -262,6 +286,8 @@ def cmd_doctor(args) -> int:
     for c in rep.conflicts:
         print(f"  conflict: {c.description}")
     print(f"updates:    {'daily check on' if settings.auto_update_check else 'off'}")
+    from . import report
+    print(f"reports:    {settings.auto_report}; gh {'ready' if report.gh_ready() else 'not available'}")
     return 0
 
 
@@ -379,6 +405,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--check", action="store_true", help="only check, do not install")
     sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
     sub.add_parser("doctor", help="show version, paths, shortcut and paste setup")
+    sp = sub.add_parser("report", help="report a problem as a GitHub issue (with logs and system info)")
+    sp.add_argument("-t", "--title")
+    sp.add_argument("-m", "--message", help="what happened")
+    sp.add_argument("--stdin", action="store_true", help="read the details from stdin")
+    sp.add_argument("--dry-run", action="store_true", help="only print the report")
+    sp.add_argument("--browser", action="store_true", help="open the GitHub page instead of using gh")
     sp = sub.add_parser("export", help="export all clips to JSON")
     sp.add_argument("file", nargs="?", default="-")
     sp = sub.add_parser("import", help="import clips from a JSON export")
@@ -407,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         "list": cmd_list, "get": cmd_get, "add": cmd_add, "delete": cmd_delete, "clear": cmd_clear,
         "group": cmd_group, "sticky": cmd_flag, "never-delete": cmd_flag, "mask": cmd_flag, "pin": cmd_pin, "export": cmd_export,
         "import": cmd_import, "stats": cmd_stats, "cleanup": cmd_cleanup, "logs": cmd_logs,
-        "shortcut": cmd_shortcut, "update": cmd_update, "doctor": cmd_doctor,
+        "shortcut": cmd_shortcut, "update": cmd_update, "doctor": cmd_doctor, "report": cmd_report,
     }
     try:
         return handlers[cmd](args)

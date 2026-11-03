@@ -52,6 +52,7 @@ def setup_logging(verbose: bool = False, daemon: bool = False) -> Path | None:
         root.warning("cannot write log file: %s", e)
     if daemon:
         install_exception_hooks()
+        enable_crash_dump()
     _configured = True
     return path
 
@@ -72,6 +73,22 @@ def install_exception_hooks() -> None:
 
     sys.excepthook = hook
     threading.excepthook = thread_hook
+
+
+_crash_fh = None
+
+
+def enable_crash_dump() -> None:
+    """Hard crashes (segfaults in Qt etc.) write a traceback to crash.log; reported on the next start."""
+    global _crash_fh
+    import faulthandler
+    try:
+        path = log_dir() / "crash.log"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _crash_fh = open(path, "a", encoding="utf-8")
+        faulthandler.enable(file=_crash_fh, all_threads=True)
+    except OSError:
+        pass
 
 
 def install_qt_message_handler() -> None:

@@ -34,7 +34,7 @@ class IsolatedEnv:
         self.config = self.tmp / "settings.json"
         self.socket = str(self.tmp / "ditto.sock")
         base = {"auto_paste": False, "show_tray": False, "gnome_shortcut_done": True,
-                "auto_update_check": False, "check_shortcut": False}
+                "auto_update_check": False, "check_shortcut": False, "auto_report": "never"}
         base.update(settings or {})
         self.config.write_text(json.dumps(base))
         self.env = dict(os.environ)
@@ -43,7 +43,7 @@ class IsolatedEnv:
             "XDG_CONFIG_HOME": str(self.tmp / "config"), "XDG_DATA_HOME": str(self.tmp / "data"),
             "PYTHONPATH": str(ROOT), "PYTHONDONTWRITEBYTECODE": "1", "DITTO_NO_DESKTOP_INTEGRATION": "1",
             "XDG_STATE_HOME": str(self.tmp / "state"), "XDG_CACHE_HOME": str(self.tmp / "cache"),
-            "DITTO_NO_UPDATE_CHECK": "1",
+            "DITTO_NO_UPDATE_CHECK": "1", "DITTO_NO_REPORT": "1", "DITTO_REPORT_REPO": "example/test",
         })
         self.env.pop("DITTO_LOG", None)
         self.env.pop("DITTO_UPDATE_URL", None)

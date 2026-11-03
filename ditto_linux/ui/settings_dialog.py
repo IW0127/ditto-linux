@@ -40,6 +40,10 @@ class SettingsDialog(QDialog):
         self.check_shortcut = QCheckBox("Check the global shortcut when Ditto starts",
                                         checked=settings.check_shortcut)
         self.auto_update = QCheckBox("Check for updates once a day", checked=settings.auto_update_check)
+        self.report = QComboBox(objectName="autoReport")
+        self.report.addItems(["Ask", "Always", "Never"])
+        self.report.setCurrentText(settings.auto_report.capitalize() if settings.auto_report in
+                                   ("ask", "always", "never") else "Ask")
 
         def row(label: str, button_text: str, callback):
             box = QHBoxLayout()
@@ -68,6 +72,7 @@ class SettingsDialog(QDialog):
         form.addRow("Version:", row(__version__, "Check for Updates…", on_update))
         form.addRow(self.auto_update)
         form.addRow("Log file:", row(str(log_path()), "Open", on_log))
+        form.addRow("Report problems on GitHub:", self.report)
         form.addRow("Database:", QLabel(db_path, wordWrap=True))
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -93,4 +98,5 @@ class SettingsDialog(QDialog):
         s.show_tray = self.tray.isChecked()
         s.check_shortcut = self.check_shortcut.isChecked()
         s.auto_update_check = self.auto_update.isChecked()
+        s.auto_report = self.report.currentText().lower()
         return s

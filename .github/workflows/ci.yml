@@ -1,0 +1,30 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-pyqt6 qt6-qpa-plugins libxcb-cursor0 \
+            xvfb xserver-xephyr libxtst6 x11-utils fakeroot dpkg-dev desktop-file-utils
+      - name: Tests (unit, UI, end-to-end on a private X server)
+        run: ./run_tests.sh
+      - name: Build packages
+        run: scripts/build-release.sh
+      - name: Check packages
+        run: |
+          dpkg-deb -I dist/*.deb
+          desktop-file-validate data/ditto-linux.desktop
+          (cd dist && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/

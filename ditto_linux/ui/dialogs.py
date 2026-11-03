@@ -62,7 +62,8 @@ class ShortcutDialog(QDialog):
         self.take_btn.setDefault(True)
         self.take_btn.clicked.connect(lambda: self._done("take_over"))
         self.key_edit = QKeySequenceEdit(QKeySequence(name if name != "(none)" else ""), objectName="keyEdit")
-        self.key_edit.setMaximumSequenceLength(1)
+        if hasattr(self.key_edit, "setMaximumSequenceLength"):   # Qt >= 6.5
+            self.key_edit.setMaximumSequenceLength(1)
         self.key_btn = QPushButton("Use this key", objectName="useKey")
         self.key_btn.clicked.connect(self._use_key)
         self.later_btn = QPushButton("Not now", objectName="later")
@@ -97,6 +98,48 @@ class ShortcutDialog(QDialog):
     def _done(self, choice: str):
         self.choice = choice
         self.dont_check = self.dont.isChecked()
+        self.accept()
+
+
+class ReportDialog(QDialog):
+    """'Ditto hit a problem'. After exec(): ``choice`` is 'report', 'always', 'never' or 'later'."""
+
+    def __init__(self, problem, details: str, can_submit: bool, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ditto problem")
+        self.setObjectName("ReportDialog")
+        self.resize(560, 420)
+        self.choice = "later"
+        how = ("It will be filed as an issue on GitHub with your GitHub account."
+               if can_submit else "The GitHub issue page opens pre-filled; press Submit there.")
+        intro = QLabel(f"<p><b>Ditto hit a problem:</b> {html.escape(problem.title)}</p>"
+                       f"<p>Report it so it can be fixed? {how} The report contains the error, system "
+                       "information and recent log lines (no clipboard contents; your user name and home "
+                       "folder are hidden).</p>", wordWrap=True)
+        text = QTextBrowser(objectName="details")
+        text.setPlainText(details)
+        self.report_btn = QPushButton("Report", objectName="report")
+        self.report_btn.setDefault(True)
+        self.report_btn.clicked.connect(lambda: self._done("report"))
+        always = QPushButton("Always report", objectName="always")
+        always.clicked.connect(lambda: self._done("always"))
+        never = QPushButton("Never report", objectName="never")
+        never.clicked.connect(lambda: self._done("never"))
+        later = QPushButton("Not now", objectName="later")
+        later.clicked.connect(lambda: self._done("later"))
+        row = QHBoxLayout()
+        row.addWidget(never)
+        row.addStretch(1)
+        row.addWidget(later)
+        row.addWidget(always)
+        row.addWidget(self.report_btn)
+        lay = QVBoxLayout(self)
+        lay.addWidget(intro)
+        lay.addWidget(text, 1)
+        lay.addLayout(row)
+
+    def _done(self, choice: str):
+        self.choice = choice
         self.accept()
 
 

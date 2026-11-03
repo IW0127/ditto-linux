@@ -139,6 +139,20 @@ contents are never logged, only ids): start/stop, shortcut checks and fixes, upd
 cycling, Qt warnings and any crash with its traceback. `ditto-linux logs` (`-f` to follow, `--path`),
 *Open Log File* in the tray menu, and `ditto-linux doctor` for a summary of the setup.
 
+**Problem reports.** When Ditto hits an error (an exception, or a hard crash found on the next start) it
+can file a GitHub issue: setting *Report problems on GitHub* = **Ask** (default: a popup first), **Always**
+(no popup) or **Never**. It uses the GitHub CLI (`gh auth login`); without it the pre-filled issue page opens
+in the browser. The same problem is filed once (repeats add at most one comment a day; if the issue was closed
+a new one is opened). Reports contain the error, system info and recent log lines with your user name and home
+folder hidden, never clipboard contents. Report something by hand with
+`ditto-linux report -t "title" -m "what happened"` (`--dry-run` shows the report).
+
+## Releasing
+
+`scripts/release.sh 1.3.0 "what changed"` bumps the version, runs the tests, commits, tags and pushes.
+GitHub Actions then tests again, builds the `.deb` / `.tar.gz` and publishes the release, and installed
+copies offer the update within a day. Every push to `main` also runs the tests (CI).
+
 ## Wayland notes
 
 Under Wayland, only the focused window may read the clipboard, and GNOME/KDE do not implement the

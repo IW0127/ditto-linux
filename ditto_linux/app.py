@@ -15,14 +15,14 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import APP_NAME, __version__
-from . import desktop, update
+from . import desktop, report, update
 from .logs import install_qt_message_handler, log_path
 from .clipboard import ClipboardMonitor
 from .config import Settings, default_db_path, socket_path
 from .db import ClipStore
 from .ipc import is_running
 from .paste import Paster
-from .ui.dialogs import ShortcutDialog, UpdateDialog, exec_front
+from .ui.dialogs import ReportDialog, ShortcutDialog, UpdateDialog, exec_front
 from .ui.icons import app_icon
 from .ui.quickpaste import QuickPasteWindow
 from .ui.settings_dialog import SettingsDialog
@@ -64,6 +64,11 @@ class _Worker(QObject):
 UPDATE_INTERVAL_S = 24 * 3600
 
 
+class _ProblemBridge(QObject):
+    """Moves problems reported from any thread (logging) onto the Qt thread."""
+    problem = pyqtSignal(object)
+
+
 class DittoDaemon:
     def __init__(self, app: QApplication, db_path: str, settings: Settings, sock: str, show_tray: bool = True,
                  argv: list[str] | None = None):
@@ -71,6 +76,11 @@ class DittoDaemon:
         self.argv = list(argv if argv is not None else sys.argv[1:])
         self.worker = _Worker()
         self._update_busy = False
+        self._report_busy = False
+        self._bridge = _ProblemBridge()
+        self._bridge.problem.connect(self.on_problem)
+        self.problem_handler = report.ProblemHandler(self._bridge.problem.emit)
+        logging.getLogger().addHandler(self.problem_handler)
         self.settings = settings
         self.store = ClipStore(db_path)
         self.monitor = ClipboardMonitor(self.store, settings)
@@ -108,6 +118,10 @@ class DittoDaemon:
         self._update_timer.timeout.connect(self.check_updates)
         self._update_timer.start()
         QTimer.singleShot(int(os.environ.get("DITTO_UPDATE_FIRST_CHECK_MS", "60000")), self.check_updates)
+        dump = report.take_crash_dump()
+        if dump:
+            log.error("Ditto crashed last time:\n%s", dump)
+            QTimer.singleShot(3000, lambda: self.on_problem(report.from_crash_dump(dump)))
         log.info("ditto-linux %s running; db=%s socket=%s platform=%s", __version__, db_path, sock,
                  QApplication.platformName())
 
@@ -284,13 +298,68 @@ class DittoDaemon:
     def restart(self, after_update: bool = False):
         """Replace this process with a fresh daemon (same PID, so service managers keep tracking it)."""
         argv = update.restart_argv(self.argv) if after_update else update.self_argv(self.argv)
-        log.info("restarting: %s", " ".join(argv))
+        log.info("restarting: %s %s", argv[0], " ".join(self.argv))
+        logging.getLogger().removeHandler(self.problem_handler)
         self.paster.stop()
         self.server.close()
         QLocalServer.removeServer(self.sock_path)
         self.store.close()
         logging.shutdown()
         os.execv(argv[0], argv)
+
+    # ------------------------------------------------------------------ problem reports
+    def report_mode(self) -> str:
+        if os.environ.get("DITTO_NO_REPORT"):
+            return "never"
+        return self.settings.auto_report if self.settings.auto_report in ("ask", "always", "never") else "ask"
+
+    def on_problem(self, problem: report.Problem):
+        """An error happened: file a GitHub issue (always), ask first (ask) or only log it (never)."""
+        mode = self.report_mode()
+        log.warning("problem %s: %s (report mode: %s)", problem.fingerprint, problem.title, mode)
+        if mode == "never" or self._report_busy:
+            return
+        if not report.should_send(problem):
+            log.info("problem %s was reported recently; not reporting again yet", problem.fingerprint)
+            return
+        if mode == "always":
+            self._submit_problem(problem, fallback_browser=False)
+            return
+        self._report_busy = True
+        try:
+            can_submit = report.gh_ready()
+            dlg = ReportDialog(problem, report.sanitize(problem.details), can_submit)
+            exec_front(dlg)
+        finally:
+            self._report_busy = False
+        log.info("problem %s: user chose %s", problem.fingerprint, dlg.choice)
+        if dlg.choice in ("always", "never"):
+            self.settings.auto_report = dlg.choice
+            self.settings.save()
+        if dlg.choice in ("report", "always"):
+            if can_submit:
+                self._submit_problem(problem, fallback_browser=True)
+            else:
+                QDesktopServices.openUrl(QUrl(report.new_issue_url(problem)))
+
+    def _submit_problem(self, problem: report.Problem, fallback_browser: bool):
+        self._report_busy = True
+
+        def work():
+            if not report.gh_ready():
+                raise report.ReportError("the GitHub CLI (gh) is not installed or not logged in")
+            return report.submit(problem)
+
+        def done(result):
+            self._report_busy = False
+            if isinstance(result, Exception):
+                log.warning("could not report problem %s: %s", problem.fingerprint, result)
+                if fallback_browser:
+                    QDesktopServices.openUrl(QUrl(report.new_issue_url(problem)))
+                return
+            if self.tray:
+                self.tray.showMessage("Ditto", f"Problem reported: {result}")
+        self.worker.run(work, done)
 
     def open_log(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_path())))
@@ -316,6 +385,7 @@ class DittoDaemon:
 
     def quit(self):
         log.info("ditto-linux %s stopping", __version__)
+        logging.getLogger().removeHandler(self.problem_handler)
         self.paster.stop()
         self.server.close()
         QLocalServer.removeServer(self.sock_path)

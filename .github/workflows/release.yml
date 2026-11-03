@@ -1,0 +1,42 @@
+name: Release
+# Pushing a tag like v1.3.0 (scripts/release.sh does it) tests, builds and publishes the release.
+# Installed copies of Ditto pick it up with their daily update check.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fakeroot dpkg-dev
+      - name: Build
+        run: scripts/build-release.sh
+      - name: Check the version matches the tag
+        run: |
+          VER=$(python3 -c "import ditto_linux; print(ditto_linux.__version__)")
+          test "v$VER" = "$GITHUB_REF_NAME" || { echo "version $VER does not match tag $GITHUB_REF_NAME"; exit 1; }
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=${GITHUB_REF_NAME#v}
+          git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)' > notes.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          elif [ -s notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" dist/* --title "Ditto for Linux $VER" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --title "Ditto for Linux $VER" --generate-notes
+          fi

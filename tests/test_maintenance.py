@@ -375,6 +375,7 @@ class DaemonDecisionTests(unittest.TestCase):
                                   argv=["daemon", "--no-tray"])
         self.addCleanup(self.daemon.server.close)
         self.addCleanup(self.daemon.store.close)
+        self.addCleanup(lambda: __import__("logging").getLogger().removeHandler(self.daemon.problem_handler))
         self.addCleanup(self.daemon.paster.stop)
 
     def test_shortcut_popup_take_over(self):
@@ -485,3 +486,204 @@ class LogAndCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ====================================================================== problem reports
+class ReportTests(unittest.TestCase):
+    def setUp(self):
+        from ditto_linux import report
+        self.report = report
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.tmp.name})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def problem(self, msg="boom", line=10):
+        try:
+            exec(compile("\n" * line + f"raise ValueError({msg!r})", "/x/ditto_linux/app.py", "exec"))
+        except ValueError:
+            return self.report.from_exception(sys.exc_info(), "paste")
+
+    def test_fingerprint_ignores_values_and_line_numbers(self):
+        a, b = self.problem("boom 1", 10), self.problem("boom 2", 20)
+        self.assertEqual(a.fingerprint, b.fingerprint)
+        self.assertTrue(a.title.startswith("ValueError: boom 1"))
+        try:
+            raise KeyError("x")
+        except KeyError:
+            c = self.report.from_exception(sys.exc_info())
+        self.assertNotEqual(a.fingerprint, c.fingerprint)
+        dump = "Fatal Python error: Segmentation fault\n\nCurrent thread:\n  File \"/x/ditto_linux/app.py\", line 3 in paste\n"
+        self.assertTrue(self.report.from_crash_dump(dump).title.startswith("Crash: Fatal Python error"))
+
+    def test_body_is_sanitized_and_tagged(self):
+        home = str(Path.home())
+        p = self.report.Problem("t", f'File "{home}/secret/app.py"\ntoken ghp_{"a" * 30}', "abc123")
+        body = self.report.build_body(p)
+        self.assertNotIn(home + "/", body)
+        self.assertIn("~/secret/app.py", body)
+        self.assertNotIn("ghp_aaaa", body)
+        self.assertIn("ditto-fingerprint: abc123", body)
+        self.assertIn(f"| Ditto | {__version__} |", body)
+        url = self.report.new_issue_url(p)
+        self.assertTrue(url.startswith(f"https://github.com/{self.report.REPO}/issues/new?"))
+        self.assertLess(len(url), 20000)
+
+    issue_state = "OPEN"
+
+    def fake_gh(self, existing=None):
+        calls = []
+
+        def run(*args, input=None, timeout=30):
+            calls.append((args, input))
+            if args[:2] == ("issue", "list"):
+                return subprocess.CompletedProcess(args, 0, json.dumps(existing or []), "")
+            if args[:2] == ("issue", "view"):
+                return subprocess.CompletedProcess(args, 0, self.issue_state + "\n", "")
+            if args[:2] == ("issue", "create"):
+                return subprocess.CompletedProcess(args, 0, "https://github.com/o/r/issues/7\n", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+        p = mock.patch.object(self.report, "_gh", side_effect=run)
+        p.start()
+        self.addCleanup(p.stop)
+        return calls
+
+    def test_submit_creates_once_then_comments(self):
+        calls = self.fake_gh()
+        prob = self.problem()
+        self.assertTrue(self.report.should_send(prob))
+        self.assertEqual(self.report.submit(prob), "https://github.com/o/r/issues/7")
+        create = [c for c in calls if c[0][:2] == ("issue", "create")][0]
+        self.assertIn("--label", create[0])
+        self.assertIn(prob.fingerprint, create[1])
+        self.assertFalse(self.report.should_send(prob), "not again within a day")
+        import time as _t
+        self.assertTrue(self.report.should_send(prob, now=_t.time() + 25 * 3600))
+        self.report.submit(prob)
+        self.assertEqual(calls[-1][0][:3], ("issue", "comment", "7"))
+        self.assertIn("seen 2 times", calls[-1][1])
+
+    def test_closed_issue_gets_a_new_one(self):
+        calls = self.fake_gh()
+        prob = self.problem()
+        self.report.submit(prob)
+        self.issue_state = "CLOSED"
+        self.report.submit(prob)
+        self.assertEqual([c[0][1] for c in calls if c[0][0] == "issue" and c[0][1] in ("create", "comment")],
+                         ["create", "create"])
+
+    def test_submit_reuses_open_issue_found_on_github(self):
+        calls = self.fake_gh(existing=[{"number": 3, "url": "https://github.com/o/r/issues/3"}])
+        self.report.submit(self.problem())
+        self.assertEqual(calls[-1][0][:3], ("issue", "comment", "3"))
+        self.assertFalse(any(c[0][:2] == ("issue", "create") for c in calls))
+
+    def test_handler_catches_logged_exceptions_only(self):
+        import logging
+        got = []
+        h = self.report.ProblemHandler(got.append)
+        lg = logging.getLogger("ditto_linux.test_handler")
+        lg.addHandler(h)
+        lg.propagate = False
+        try:
+            lg.error("plain error without traceback")
+            try:
+                1 / 0
+            except ZeroDivisionError:
+                lg.exception("IPC command failed")
+        finally:
+            lg.removeHandler(h)
+        self.assertEqual(len(got), 1)
+        self.assertIn("ZeroDivisionError", got[0].title)
+        self.assertIn("IPC command failed", got[0].title)
+
+    def test_crash_dump_taken_once(self):
+        f = self.report.crash_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("Fatal Python error: Aborted\n")
+        self.assertIn("Aborted", self.report.take_crash_dump())
+        self.assertEqual(self.report.take_crash_dump(), "")
+
+
+class DaemonReportTests(DaemonDecisionTests):
+    """How the daemon reacts to a problem in each report mode."""
+
+    def setUp(self):
+        super().setUp()
+        from ditto_linux import report
+        self.report = report
+        self.addCleanup(lambda: __import__("logging").getLogger().removeHandler(self.daemon.problem_handler))
+        p = mock.patch.dict(os.environ, {"DITTO_NO_REPORT": ""})
+        p.start()
+        self.addCleanup(p.stop)
+        self.prob = report.Problem("ValueError: x", "Traceback...\nValueError: x", "fp1")
+
+    def test_never_only_logs(self):
+        self.settings.auto_report = "never"
+        with mock.patch("ditto_linux.app.exec_front") as ex, mock.patch.object(self.daemon.worker, "run") as run:
+            self.daemon.on_problem(self.prob)
+        ex.assert_not_called()
+        run.assert_not_called()
+
+    def test_always_submits_without_asking(self):
+        self.settings.auto_report = "always"
+        with mock.patch("ditto_linux.app.exec_front") as ex, mock.patch.object(self.daemon.worker, "run") as run:
+            self.daemon.on_problem(self.prob)
+        ex.assert_not_called()
+        run.assert_called_once()
+
+    def test_ask_then_always(self):
+        self.settings.auto_report = "ask"
+
+        def fake_exec(dlg):
+            dlg.choice = "always"
+            return 1
+        with mock.patch("ditto_linux.app.exec_front", fake_exec), \
+                mock.patch("ditto_linux.app.report.gh_ready", return_value=True), \
+                mock.patch.object(self.daemon.worker, "run") as run:
+            self.daemon.on_problem(self.prob)
+        run.assert_called_once()
+        self.assertEqual(Settings.load().auto_report, "always")
+
+    def test_ask_without_gh_opens_prefilled_page(self):
+        self.settings.auto_report = "ask"
+
+        def fake_exec(dlg):
+            dlg.choice = "report"
+            return 1
+        with mock.patch("ditto_linux.app.exec_front", fake_exec), \
+                mock.patch("ditto_linux.app.report.gh_ready", return_value=False), \
+                mock.patch("ditto_linux.app.QDesktopServices.openUrl") as open_url:
+            self.daemon.on_problem(self.prob)
+        self.assertIn("/issues/new?", open_url.call_args.args[0].toString())
+
+    def test_logged_exception_reaches_the_daemon(self):
+        import logging
+        self.settings.auto_report = "always"
+        with mock.patch.object(self.daemon, "_submit_problem") as sub:
+            try:
+                raise RuntimeError("from a slot")
+            except RuntimeError:
+                logging.getLogger("ditto_linux.clipboard").exception("failed to save clip")
+            app.processEvents()
+        sub.assert_called_once()
+        self.assertIn("RuntimeError", sub.call_args.args[0].title)
+
+    def test_recent_problem_not_reported_twice(self):
+        self.settings.auto_report = "always"
+        with mock.patch("ditto_linux.app.report.should_send", return_value=False), \
+                mock.patch.object(self.daemon.worker, "run") as run:
+            self.daemon.on_problem(self.prob)
+        run.assert_not_called()
+
+
+class ReportDialogTests(unittest.TestCase):
+    def test_choices(self):
+        from ditto_linux import report
+        from ditto_linux.ui.dialogs import ReportDialog
+        p = report.Problem("ValueError: x", "details", "fp")
+        for name in ("report", "always", "never", "later"):
+            dlg = ReportDialog(p, "details", can_submit=True)
+            dlg.findChild(type(dlg.report_btn), name).click()
+            self.assertEqual(dlg.choice, name)
