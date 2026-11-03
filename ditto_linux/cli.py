@@ -13,6 +13,7 @@ from . import formats as fmt
 from .config import Settings, default_db_path
 from .db import NO_PARENT, ClipStore, dumps_export
 from .ipc import DaemonNotRunning, request
+from .transforms import TRANSFORMS
 
 
 def _store(args) -> ClipStore:
@@ -372,8 +373,10 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_ in (("paste", "put a clip on the clipboard and paste it into the focused window"),
                         ("copy", "put a clip on the clipboard")):
         sp = sub.add_parser(name, help=help_)
-        sp.add_argument("id", type=int)
+        sp.add_argument("ids", type=int, nargs="+", metavar="id", help="several ids are joined into one text")
         sp.add_argument("--plain", action="store_true", help="plain text only")
+        sp.add_argument("-t", "--transform", choices=sorted(TRANSFORMS),
+                        help="special paste: change the text first")
 
     sp = sub.add_parser("list", help="list clips (most recent first)")
     sp.add_argument("-n", "--limit", type=int, default=20)
@@ -461,7 +464,9 @@ def main(argv: list[str] | None = None) -> int:
     if cmd in ("show", "toggle", "hotkey", "hide", "pause", "resume", "status", "quit", "restart"):
         return _ipc(cmd)
     if cmd in ("paste", "copy"):
-        return _ipc(cmd, id=args.id, plain=args.plain)
+        if len(args.ids) == 1 and not args.transform:
+            return _ipc(cmd, id=args.ids[0], plain=args.plain)
+        return _ipc(cmd, id=args.ids[0], ids=args.ids, plain=args.plain, transform=args.transform or "")
     handlers = {
         "list": cmd_list, "get": cmd_get, "add": cmd_add, "delete": cmd_delete, "clear": cmd_clear,
         "group": cmd_group, "sticky": cmd_flag, "never-delete": cmd_flag, "mask": cmd_flag, "pin": cmd_pin, "export": cmd_export,

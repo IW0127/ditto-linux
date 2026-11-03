@@ -236,6 +236,35 @@ class DaemonE2E(unittest.TestCase):
         cid = int(self.iso.cli("add", "after restart").stdout)
         self.assertIn(cid, [c["id"] for c in self.iso.cli_json("list", "--json", "-s", "after restart")])
 
+    def test_18_multi_and_special_paste_to_clipboard(self):
+        a = int(self.iso.cli("add", "alpha item").stdout)
+        b = int(self.iso.cli("add", "beta item").stdout)
+        self.iso.cli("copy", a, b, "--transform", "upper")
+        wait_for(lambda: self.read_clipboard("text/plain") == "ALPHA ITEM\nBETA ITEM", what="joined, uppercased text")
+        self.iso.cli("copy", b, "--transform", "slug")
+        wait_for(lambda: self.read_clipboard("text/plain") == "beta-item", what="slugified text")
+        self.assertEqual(self.iso.cli("copy", a, "-t", "nope", check=False).returncode, 2)
+
+    def test_19_ignored_app_is_not_recorded_and_source_is_kept(self):
+        import json as _json
+        cfg = _json.loads(self.iso.config.read_text())
+        cfg["ignore_apps"] = "cliptool"
+        self.iso.config.write_text(_json.dumps(cfg))
+        from ditto_linux.ipc import request
+        request("reload-settings", path=self.iso.socket)
+        before = self.iso.cli_json("stats")["clips"]
+        self.own("set-text", "copied in an ignored app")
+        time.sleep(1.5)
+        self.assertEqual(self.iso.cli_json("stats")["clips"], before, "copy from an ignored app was saved")
+        self.assertIn("ignored app 'cliptool'", self.iso.log.read_text())
+        cfg["ignore_apps"] = ""
+        self.iso.config.write_text(_json.dumps(cfg))
+        request("reload-settings", path=self.iso.socket)
+        self.own("set-text", "copied in a normal app")
+        clip = wait_for(lambda: next(iter(self.clips("-s", "copied in a normal app")), None),
+                        what="copy from a normal app to be saved")
+        self.assertEqual(clip["source"], "cliptool", "the source app is recorded")
+
     def test_99_quit_cleans_up(self):
         self.iso.cli("quit")
         self.assertEqual(self.daemon.wait(10), 0, self.daemon_log())

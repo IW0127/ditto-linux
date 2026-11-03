@@ -57,6 +57,8 @@ Copy things as usual. Press Ctrl+` (or click the tray icon, or run `ditto-linux 
 | type | search (all words must match; `"quoted phrase"` supported) |
 | Enter / Double-click | Paste selected clip into the previous window |
 | Shift+Enter | Paste as plain text |
+| Ctrl/Shift+click, then Enter | Paste several clips at once (one per line, in list order) |
+| Ctrl+Shift+V | Special paste: UPPERCASE, lowercase, Capitalize, Sentence case, trim, one line, slugify… |
 | Ctrl+1 … Ctrl+0 (also numpad) | Paste clip at position 1–10 |
 | Ctrl+C | Copy selected clip to the clipboard (no paste) |
 | Esc | Clear search → leave group → close |
@@ -90,6 +92,19 @@ These match Windows Ditto's defaults; Ctrl+M, Ctrl+S, Ctrl+D, Ctrl+P, Ctrl+H, Ct
 
 **Quick paste of the previous clip:** hold Ctrl, tap ` twice, release Ctrl: the clip before the current one is
 pasted. Each extra tap of ` moves one clip further down.
+
+**Paste several clips:** select them with Ctrl+click or Shift+arrows and press Enter; they are pasted as one
+text, separated by a new line (or space / comma / tab / nothing, in Options).
+
+**Special paste** (Ctrl+Shift+V or right-click → Special Paste) changes the text before pasting:
+UPPERCASE, lowercase, Capitalize Each Word, Sentence case, iNVERT cASE, trim spaces, remove line breaks,
+remove extra spaces and blank lines, slugify. It also works on several selected clips. From the command line:
+`ditto-linux paste 12 15 --transform upper`.
+
+**Ignore apps:** Options → *Don't save copies from* (e.g. `keepassxc, bitwarden`, `*` wildcards). Ditto
+identifies the app that copied for X11 apps and apps running through XWayland (many Electron apps); native
+Wayland apps cannot be identified and are always saved. Each clip's *Properties* show the app it came from,
+and Options lists recently seen apps.
 
 **Pins:** pinned clips stay at the top, in the order you choose (Ctrl+Up/Down), so Ctrl+1, Ctrl+2… always paste
 the same ones. Give a pin a title with Ctrl+P (or F2). For passwords and tokens tick *Hide content*: the list,
@@ -127,7 +142,7 @@ fails, Ditto now says so in a notification; the clip is still on the clipboard, 
 ditto-linux list [-n 20] [-s search] [-g GROUP] [--json]
 ditto-linux get ID [-f text/html|image/png|...]     # raw data to stdout
 ditto-linux add [TEXT]                              # or from stdin
-ditto-linux copy ID [--plain]  /  paste ID [--plain]
+ditto-linux copy ID... [--plain] [-t TRANSFORM]  /  paste ID... [--plain] [-t TRANSFORM]
 ditto-linux delete ID...  |  clear  |  cleanup [--max N] [--days N] [--vacuum]
 ditto-linux group create NAME | list | move GROUP ID...
 ditto-linux pin ID [--title T] [--hide] [--up N] [--off]   # pin, title, hide content, reorder
@@ -202,7 +217,7 @@ Clips marked by password managers (`x-kde-passwordManagerHint: secret`) are neve
 ./run_tests.sh
 ```
 
-There are 63 tests:
+There are 161 tests:
 
 - **Unit tests:** the DB schema, Windows format conversion, search, groups, auto-delete, import/export and legacy-DB upgrade.
 - **CLI tests:** every command and its error handling.
@@ -211,8 +226,12 @@ There are 63 tests:
 
 ## Scope compared with Windows Ditto
 
-Included: history, search, groups, sticky clips, descriptions, editing, plain-text paste, quick paste with
-Ctrl+number, image thumbnails and preview, auto-delete by count or age, pause, import/export, and the same database format.
+Included: history, search, groups, pinned clips with titles and hidden content, descriptions, editing,
+plain-text paste, pasting several clips at once, special paste (text transforms), ignoring apps, quick paste
+with Ctrl+number and Ctrl+` cycling, image thumbnails and preview, comparing clips, auto-delete by count or
+age, pause, import/export, and the same database format. Extra: auto-update, shortcut check and repair,
+automatic problem reports and logs.
 
-Not ported (Windows-specific or out of scope for now): network sync between computers ("friends"), ChaiScript
-add-ins, multiple copy buffers, per-clip global hotkeys, themes, and Windows-only clipboard formats (RTF, CF_HDROP).
+Not ported yet: network sync between computers ("friends"), per-clip global hotkeys, multiple copy buffers,
+themes / font / remembered window position, drag and drop, saving a clip to a file or QR code, regex search,
+ChaiScript add-ins, RTF clips, and automatic Ctrl+` setup on desktops other than GNOME.

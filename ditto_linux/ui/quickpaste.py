@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .. import formats as fmt
+from ..transforms import TRANSFORMS
 from ..db import NO_PARENT, Clip, ClipStore
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class PinDialog(QDialog):
 
 class QuickPasteWindow(QWidget):
     pasteRequested = pyqtSignal(int, bool)  # clip id, plain text only
+    pasteManyRequested = pyqtSignal(list, bool, str)  # clip ids (list order), plain, transform
     copyRequested = pyqtSignal(int)         # put clip on the clipboard, no paste, keep window
     settingsRequested = pyqtSignal()
     updateRequested = pyqtSignal()
@@ -115,6 +117,7 @@ class QuickPasteWindow(QWidget):
         self.list.setIconSize(QSize(48, 32))
         self.list.itemActivated.connect(lambda _i: self.paste_selected())
         self.list.currentItemChanged.connect(lambda *_: self._update_preview())
+        self.list.itemSelectionChanged.connect(self._update_status)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._context_menu)
         self.list.installEventFilter(self)
@@ -181,6 +184,8 @@ class QuickPasteWindow(QWidget):
         ("Hold Ctrl, press ` again", "Move to the next clip; release Ctrl to paste it"),
         ("Enter / Double-click", "Paste selected clip into the previous window"),
         ("Shift+Enter", "Paste as plain text"),
+        ("Ctrl+click / Shift+click, Enter", "Paste several clips at once (one per line, in list order)"),
+        ("Ctrl+Shift+V", "Special paste: UPPERCASE, lowercase, Capitalize, trim, one line…"),
         ("Ctrl+1 … Ctrl+0 (also numpad)", "Paste clip at position 1–10"),
         ("Ctrl+C", "Copy selected clip to the clipboard (no paste)"),
         ("Esc", "Clear search → leave group → close"),
@@ -237,6 +242,7 @@ class QuickPasteWindow(QWidget):
         sc("F3", self.toggle_preview)
         sc("F5", self.refresh)
         sc("Ctrl+M", self.move_selected_to_group)
+        sc("Ctrl+Shift+V", self.special_paste_menu)
         sc("Ctrl+S", self.toggle_sticky)
         sc("Ctrl+P", self.pin_selected)
         sc("Ctrl+H", self.toggle_hidden)
@@ -315,8 +321,19 @@ class QuickPasteWindow(QWidget):
         path = " › ".join(name for _gid, name in self.group_stack)
         total = self.store.count()
         flags = ("  ·  groups only" if self.groups_only else "") + ("  ·  📌 kept open" if self.persistent else "")
-        self.status.setText((f"{path}  ·  " if path else "") + f"{len(clips)} shown · {total} clips" + flags)
+        self._status_base = (f"{path}  ·  " if path else "") + f"{len(clips)} shown · {total} clips" + flags
+        self._update_status()
         self.back_btn.setVisible(bool(self.group_stack))
+
+    def _update_status(self):
+        n = len(self._paste_ids())
+        extra = f"  ·  {n} selected: Enter pastes them together" if n > 1 else ""
+        self.status.setText(getattr(self, "_status_base", "") + extra)
+
+    def _paste_ids(self) -> list[int]:
+        """Selected clips (not groups) in the order they are listed."""
+        rows = sorted(self.list.row(i) for i in self.list.selectedItems())
+        return [self.list.item(r).data(ROLE_ID) for r in rows if not self.list.item(r).data(ROLE_GROUP)]
 
     def _make_item(self, clip: Clip, index: int) -> QListWidgetItem:
         prefix = f"{index + 1}. " if index < 10 else ""
@@ -354,6 +371,10 @@ class QuickPasteWindow(QWidget):
 
     # ------------------------------------------------------------------ actions
     def paste_selected(self, plain: bool = False):
+        ids = self._paste_ids()
+        if len(ids) > 1:
+            self.pasteManyRequested.emit(ids, plain, "")
+            return
         cur = self._current()
         if not cur:
             return
@@ -362,6 +383,34 @@ class QuickPasteWindow(QWidget):
             self.enter_group(clip_id)
             return
         self.pasteRequested.emit(clip_id, plain)
+
+    def special_paste(self, transform: str):
+        ids = self._paste_ids()
+        if not ids:
+            cur = self._current()
+            ids = [cur[0]] if cur and not cur[1] else []
+        if ids:
+            self.pasteManyRequested.emit(ids, True, transform)
+
+    def _special_paste_menu(self, parent=None) -> QMenu:
+        m = QMenu("Special Paste", parent or self)
+        for key, (label, letter, _fn) in TRANSFORMS.items():
+            i = label.upper().find(letter)
+            text = label[:i] + "&" + label[i:] if i >= 0 else label
+            m.addAction(text, lambda k=key: self.special_paste(k))
+        return m
+
+    def special_paste_menu(self):
+        item = self.list.currentItem()
+        if item is None:
+            return
+        m = self._special_paste_menu()
+        rect = self.list.visualItemRect(item)
+        self._dialog_open += 1
+        try:
+            m.exec(self.list.viewport().mapToGlobal(rect.bottomLeft()))
+        finally:
+            self._dialog_open -= 1
 
     def _paste_index(self, n: int):
         item = self.list.item(n)
@@ -586,6 +635,9 @@ class QuickPasteWindow(QWidget):
             elif clip:
                 m.addAction("Paste\tEnter", self.paste_selected)
                 m.addAction("Paste Plain Text\tShift+Enter", lambda: self.paste_selected(plain=True))
+                sp = self._special_paste_menu(m)
+                sp.setTitle("Special Paste\tCtrl+Shift+V")
+                m.addMenu(sp)
                 m.addSeparator()
                 m.addAction("Copy\tCtrl+C", self.copy_selected)
                 m.addAction("Edit Clip…\tCtrl+E", self.edit_selected)
@@ -699,6 +751,7 @@ class QuickPasteWindow(QWidget):
                 ("Last pasted", when(clip.last_paste)), ("Group", group.text if group else "(none)"),
                 ("Title / description", clip.description or "(none)"), ("Pinned", "yes" if clip.sticky else "no"),
                 ("Content hidden", "yes" if clip.hidden else "no"),
+                ("Copied from", clip.source or "(unknown)"),
                 ("Never auto delete", "yes" if clip.never_delete else "no")]
         rows += [(f"Format {m}", f"{len(v):,} bytes") for m, v in data.items()]
         text = "".join(f"<tr><td><b>{_html.escape(str(k))}</b></td><td>{_html.escape(str(v))}</td></tr>"

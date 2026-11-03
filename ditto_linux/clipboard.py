@@ -1,6 +1,7 @@
 """Clipboard monitoring and writing through Qt (X11 / XWayland via xcb, or native Wayland)."""
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import time
@@ -49,6 +50,29 @@ def mime_to_formats(md: QMimeData, settings: Settings) -> dict[str, bytes]:
     return out
 
 
+def ignore_patterns(setting: str) -> list[str]:
+    return [p.strip().lower() for p in setting.replace("\n", ",").split(",") if p.strip()]
+
+
+def ignored_by(owner: dict | None, patterns: list[str]) -> str | None:
+    """The pattern from the 'ignore apps' list that matches the clipboard owner, or None."""
+    if not owner or not patterns:
+        return None
+    names = [n.lower() for n in owner.get("names", []) + owner.get("wm_class", []) if n]
+    for pat in patterns:
+        for n in names:
+            if fnmatch.fnmatchcase(n, pat) or n == pat:
+                return pat
+    return None
+
+
+def source_name(owner: dict | None) -> str:
+    if not owner:
+        return ""
+    names = owner.get("names") or owner.get("wm_class") or []
+    return names[0] if names else ""
+
+
 def formats_to_mime(formats: dict[str, bytes], plain_text: bool = False) -> QMimeData:
     md = QMimeData()
     if fmt.TEXT in formats:
@@ -74,10 +98,13 @@ def formats_to_mime(formats: dict[str, bytes], plain_text: bool = False) -> QMim
 class ClipboardMonitor(QObject):
     clipCaptured = pyqtSignal(int, bool)  # clip id, newly created
 
-    def __init__(self, store: ClipStore, settings: Settings, parent=None):
+    def __init__(self, store: ClipStore, settings: Settings, parent=None, owner_lookup=None):
         super().__init__(parent)
         self.store = store
         self.settings = settings
+        if owner_lookup is None and QGuiApplication.platformName() == "xcb":
+            from .ui.x11 import clipboard_owner as owner_lookup
+        self.owner_lookup = owner_lookup or (lambda: None)
         self.paused = False
         self.clipboard: QClipboard = QGuiApplication.clipboard()
         self._own: tuple[float, dict[str, bytes]] | None = None
@@ -95,8 +122,16 @@ class ClipboardMonitor(QObject):
             return None
         if self._own and time.monotonic() - self._own[0] < 3 and self._is_own(formats):
             return None  # our own write (paste from history) must not be re-recorded
+        owner = self.owner_lookup()
+        if owner and owner.get("pid") == os.getpid():
+            return None
+        pattern = ignored_by(owner, ignore_patterns(self.settings.ignore_apps))
+        if pattern:
+            log.info("not saving a copy from %s (ignored app '%s')", source_name(owner), pattern)
+            return None
         try:
-            clip_id, created = self.store.add_clip(formats, self.settings.move_duplicate_to_top)
+            clip_id, created = self.store.add_clip(formats, self.settings.move_duplicate_to_top,
+                                                   source=source_name(owner))
         except Exception:  # never let a bad clip kill the daemon
             log.exception("failed to save clip")
             return None
@@ -105,6 +140,11 @@ class ClipboardMonitor(QObject):
         log.debug("captured clip %s (new=%s)", clip_id, created)
         self.clipCaptured.emit(clip_id, created)
         return clip_id
+
+    def set_formats(self, formats: dict[str, bytes], plain_text: bool = False) -> None:
+        """Put arbitrary data on the clipboard without recording it as a new clip."""
+        self._own = (time.monotonic(), formats)
+        self.clipboard.setMimeData(formats_to_mime(formats, plain_text), QClipboard.Mode.Clipboard)
 
     def set_clip(self, clip_id: int, plain_text: bool = False) -> bool:
         formats = self.store.get_formats(clip_id)

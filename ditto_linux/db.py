@@ -40,7 +40,7 @@ _SCHEMA = [
     "CREATE INDEX IF NOT EXISTS Main_CRC on Main(CRC ASC)",
     # ditto-linux extension (Windows Ditto ignores this table): clips whose content is hidden in
     # the list, e.g. passwords, so only their title is shown.
-    "CREATE TABLE IF NOT EXISTS ClipFlags(lClipID INTEGER PRIMARY KEY, bHidden INTEGER DEFAULT 0)",
+    "CREATE TABLE IF NOT EXISTS ClipFlags(lClipID INTEGER PRIMARY KEY, bHidden INTEGER DEFAULT 0, sSource TEXT)",
     """CREATE TRIGGER IF NOT EXISTS ClipFlags_delete_trigger AFTER DELETE ON Main FOR EACH ROW
         BEGIN DELETE FROM ClipFlags WHERE lClipID = old.lID; END""",
 ]
@@ -67,6 +67,7 @@ class Clip:
     description: str
     last_paste: int | None
     hidden: bool = False
+    source: str = ""      # app the clip was copied from, when known
 
     MASK = "••••••••"
 
@@ -81,13 +82,14 @@ class Clip:
             "id": self.id, "text": self.text, "date": self.date, "is_group": self.is_group,
             "parent_id": self.parent_id, "sticky": self.sticky, "never_delete": self.never_delete,
             "description": self.description, "last_paste": self.last_paste,
-            "hidden": self.hidden,
+            "hidden": self.hidden, "source": self.source,
         }
 
 
 _COLS = ("lID, mText, lDate, bIsGroup, lParentID, stickyClipOrder, stickyClipGroupOrder, "
          "lDontAutoDelete, QuickPasteText, lastPasteDate, "
-         "COALESCE((SELECT bHidden FROM ClipFlags WHERE lClipID = Main.lID), 0)")
+         "COALESCE((SELECT bHidden FROM ClipFlags WHERE lClipID = Main.lID), 0), "
+         "(SELECT sSource FROM ClipFlags WHERE lClipID = Main.lID)")
 
 
 def _row_to_clip(r) -> Clip:
@@ -95,7 +97,7 @@ def _row_to_clip(r) -> Clip:
     sticky = (r[5] is not None) if parent in (NO_PARENT, 0) else (r[6] is not None)
     return Clip(id=r[0], text=r[1] or "", date=r[2] or 0, is_group=bool(r[3]), parent_id=parent,
                 sticky=sticky, never_delete=bool(r[7]), description=r[8] or "", last_paste=r[9],
-                hidden=bool(r[10]))
+                hidden=bool(r[10]), source=r[11] or "")
 
 
 def compute_crc(formats: dict[str, bytes]) -> int:
@@ -130,6 +132,8 @@ class ClipStore:
                         self.conn.execute(f"ALTER TABLE Main ADD {col} {typ}")
             for stmt in _SCHEMA:
                 self.conn.execute(stmt)
+            if "sSource" not in {r[1] for r in self.conn.execute("PRAGMA table_info(ClipFlags)")}:
+                self.conn.execute("ALTER TABLE ClipFlags ADD sSource TEXT")
             if not self.conn.execute("SELECT 1 FROM Types LIMIT 1").fetchone():
                 self.conn.executemany("INSERT INTO Types(TypeText) VALUES(?)", [(t,) for t in DEFAULT_TYPES])
 
@@ -168,7 +172,7 @@ class ClipStore:
 
     # ------------------------------------------------------------------ clips
     def add_clip(self, formats: dict[str, bytes], move_duplicate_to_top: bool = True,
-                 parent_id: int = NO_PARENT) -> tuple[int, bool]:
+                 parent_id: int = NO_PARENT, source: str = "") -> tuple[int, bool]:
         """Store a clip. Returns ``(clip_id, created)``; duplicates are moved to the top instead."""
         formats = {k: v for k, v in formats.items() if v}
         if not formats:
@@ -184,6 +188,8 @@ class ClipStore:
                 if move_duplicate_to_top:
                     self.conn.execute("UPDATE Main SET clipOrder = ?, lDate = ? WHERE lID = ?",
                                       (self._next_order("clipOrder"), now, dup[0]))
+                if source:
+                    self._set_source(dup[0], source)
                 return dup[0], False
             cur = self.conn.execute(
                 "INSERT INTO Main(lDate, mText, lShortCut, lDontAutoDelete, CRC, bIsGroup, lParentID, "
@@ -197,7 +203,20 @@ class ClipStore:
                 "INSERT INTO Data(lParentID, strClipBoardFormat, ooData) VALUES(?, ?, ?)",
                 [(clip_id, name, sqlite3.Binary(data)) for name, data in fmt.to_storage(formats)],
             )
+            if source:
+                self._set_source(clip_id, source)
             return clip_id, True
+
+    def _set_source(self, clip_id: int, source: str) -> None:
+        self.conn.execute("INSERT INTO ClipFlags(lClipID, sSource) VALUES(?, ?) "
+                          "ON CONFLICT(lClipID) DO UPDATE SET sSource = excluded.sSource", (clip_id, source))
+
+    def recent_sources(self, limit: int = 20) -> list[str]:
+        """Apps that clips were recently copied from (for the 'ignore apps' option)."""
+        with self._lock:
+            return [r[0] for r in self.conn.execute(
+                "SELECT sSource FROM ClipFlags WHERE sSource IS NOT NULL AND sSource != '' "
+                "GROUP BY sSource ORDER BY MAX(lClipID) DESC LIMIT ?", (limit,))]
 
     def add_text(self, text: str, **kw) -> tuple[int, bool]:
         return self.add_clip({fmt.TEXT: text.encode("utf-8")}, **kw)
@@ -314,10 +333,9 @@ class ClipStore:
     def set_hidden(self, clip_id: int, hidden: bool) -> None:
         """Hide a clip's content in the list (only its title is shown); it still pastes normally."""
         with self._lock:
-            if hidden:
-                self.conn.execute("INSERT OR REPLACE INTO ClipFlags(lClipID, bHidden) VALUES(?, 1)", (clip_id,))
-            else:
-                self.conn.execute("DELETE FROM ClipFlags WHERE lClipID = ?", (clip_id,))
+            self.conn.execute("INSERT INTO ClipFlags(lClipID, bHidden) VALUES(?, ?) "
+                              "ON CONFLICT(lClipID) DO UPDATE SET bHidden = excluded.bHidden",
+                              (clip_id, int(hidden)))
 
     def pin(self, clip_id: int, title: str | None = None, hidden: bool | None = None) -> None:
         """Pin a clip at the top, optionally giving it a title and hiding its content."""

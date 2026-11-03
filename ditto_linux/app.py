@@ -15,7 +15,8 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import APP_NAME, __version__
-from . import desktop, report, update
+from . import desktop, report, transforms, update
+from . import formats as fmt
 from .logs import install_qt_message_handler, log_path
 from .clipboard import ClipboardMonitor
 from .config import Settings, default_db_path, socket_path
@@ -89,6 +90,7 @@ class DittoDaemon:
         self.window = QuickPasteWindow(self.store, settings=settings)
         self.window.setWindowIcon(app_icon())
         self.window.pasteRequested.connect(self.paste)
+        self.window.pasteManyRequested.connect(lambda ids, plain, tr: self.paste_many(ids, plain, tr))
         self.window.copyRequested.connect(self.copy_only)
         self.window.settingsRequested.connect(self.open_settings)
         self.window.updateRequested.connect(lambda: self.check_updates(manual=True))
@@ -163,7 +165,8 @@ class DittoDaemon:
     def open_settings(self):
         dlg = SettingsDialog(self.settings, str(self.store.path), self.window if self.window.isVisible() else None,
                              on_shortcut=lambda: self.ask_shortcut(manual=True),
-                             on_update=lambda: self.check_updates(manual=True), on_log=self.open_log)
+                             on_update=lambda: self.check_updates(manual=True), on_log=self.open_log,
+                             recent_apps=self.store.recent_sources())
         if exec_front(dlg) == QDialog.DialogCode.Accepted:
             dlg.apply().save()
             log.info("settings saved")
@@ -377,6 +380,34 @@ class DittoDaemon:
                               lambda: self.worker.run(self.paster.paste, self._on_pasted))
         return True
 
+    def paste_many(self, ids: list[int], plain: bool = False, transform: str = "",
+                   simulate: bool | None = None) -> bool:
+        """Paste several clips as one text (Ditto's multi-paste), optionally transformed (Special Paste)."""
+        ids = [int(i) for i in ids]
+        if len(ids) == 1 and not transform:
+            return self.paste(ids[0], plain, simulate)
+        texts = []
+        for cid in ids:
+            data = self.store.get_formats(cid)
+            if fmt.TEXT in data:
+                texts.append(data[fmt.TEXT].decode("utf-8", errors="replace"))
+            elif fmt.URIS in data:
+                texts.append("\n".join(u for u in data[fmt.URIS].decode(errors="replace").split()))
+        if not texts:
+            log.warning("paste of clips %s: none of them has text", ids)
+            return False
+        sep = transforms.SEPARATORS.get(self.settings.multi_paste_separator, "\n")
+        text = transforms.apply(transform, sep.join(texts))
+        log.info("paste %d clip(s) %s%s", len(texts), ids, f" as {transform}" if transform else "")
+        self.monitor.set_formats({fmt.TEXT: text.encode("utf-8")}, plain_text=True)
+        for cid in ids:
+            self.store.mark_pasted(cid, move_to_top=False)
+        self.window.hide()
+        if self.settings.auto_paste if simulate is None else simulate:
+            QTimer.singleShot(max(0, self.settings.paste_delay_ms),
+                              lambda: self.worker.run(self.paster.paste, self._on_pasted))
+        return True
+
     def _on_pasted(self, ok):
         if ok is True:
             return
@@ -449,6 +480,17 @@ class DittoDaemon:
         if cmd == "hide":
             self.window.hide()
             return {"ok": True}
+        if cmd in ("paste", "copy") and (req.get("ids") or req.get("transform")):
+            ids = [int(i) for i in (req.get("ids") or [req["id"]])]
+            missing = [i for i in ids if self.store.get(i) is None]
+            if missing:
+                return {"ok": False, "error": f"no clip with id {missing[0]}"}
+            try:
+                ok = self.paste_many(ids, bool(req.get("plain")), req.get("transform") or "",
+                                     simulate=req.get("simulate") if cmd == "paste" else False)
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            return {"ok": ok} if ok else {"ok": False, "error": "the clips have no text"}
         if cmd in ("paste", "copy"):
             clip_id = int(req["id"])
             if self.store.get(clip_id) is None:

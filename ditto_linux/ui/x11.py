@@ -88,3 +88,130 @@ def activate_window(win_id: int) -> bool:
         return False
     finally:
         lib.XCloseDisplay(dpy)
+
+
+# ---------------------------------------------------------------------- clipboard owner (ignore apps)
+class _XResClientIdSpec(ctypes.Structure):
+    _fields_ = [("client", ctypes.c_ulong), ("mask", ctypes.c_uint)]
+
+
+class _XResClientIdValue(ctypes.Structure):
+    _fields_ = [("spec", _XResClientIdSpec), ("length", ctypes.c_long), ("value", ctypes.c_void_p)]
+
+
+class _XClassHint(ctypes.Structure):
+    _fields_ = [("res_name", ctypes.c_char_p), ("res_class", ctypes.c_char_p)]
+
+
+_XRES = None
+_owner_dpy = None
+# processes that own the clipboard on behalf of others (Wayland apps seen through XWayland)
+PROXY_OWNERS = {"xwayland", "gnome-shell", "mutter", "kwin_wayland", "kwin_x11", "weston", "sway", "xorg"}
+_INTERPRETERS = {"python", "python3", "node", "electron", "java", "sh", "bash", "perl", "ruby", "gjs"}
+
+
+def _xres():
+    global _XRES
+    if _XRES is None:
+        name = ctypes.util.find_library("XRes")
+        if not name:
+            _XRES = False
+            return None
+        lib = ctypes.CDLL(name)
+        lib.XResQueryClientIds.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.POINTER(_XResClientIdSpec),
+                                           ctypes.POINTER(ctypes.c_long),
+                                           ctypes.POINTER(ctypes.POINTER(_XResClientIdValue))]
+        lib.XResGetClientPid.argtypes = [ctypes.POINTER(_XResClientIdValue)]
+        lib.XResGetClientPid.restype = ctypes.c_int
+        lib.XResClientIdsDestroy.argtypes = [ctypes.c_long, ctypes.POINTER(_XResClientIdValue)]
+        _XRES = lib
+    return _XRES or None
+
+
+def process_names(pid: int) -> list[str]:
+    """Names an app can be matched by: process name, executable, script (for python/node apps)."""
+    names: list[str] = []
+    try:
+        names.append(open(f"/proc/{pid}/comm").read().strip())
+    except OSError:
+        pass
+    try:
+        names.append(os.path.basename(os.readlink(f"/proc/{pid}/exe")))
+    except OSError:
+        pass
+    try:
+        argv = [a for a in open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0") if a]
+        if argv:
+            names.append(os.path.basename(argv[0].decode(errors="replace")))
+            base = names[-1].lower().rstrip("0123456789.")
+            if base in _INTERPRETERS:
+                script, args = "", iter(argv[1:])
+                for arg in args:
+                    if arg == b"-c":
+                        break                      # inline code: no script name
+                    if arg == b"-m":
+                        script = next(args, b"").decode(errors="replace")
+                        break
+                    if not arg.startswith(b"-"):
+                        script = arg.decode(errors="replace")
+                        break
+                if script:
+                    names.insert(0, os.path.splitext(os.path.basename(script))[0])
+    except OSError:
+        pass
+    seen, out = set(), []
+    for n in names:
+        if n and n.lower() not in seen:
+            seen.add(n.lower())
+            out.append(n)
+    return out
+
+
+def clipboard_owner() -> dict | None:
+    """Who owns the X11 CLIPBOARD selection: {'pid', 'names', 'wm_class'} or None when unknown.
+
+    Unknown means: no X11, the owner is a proxy for a native Wayland app, or the query failed.
+    """
+    global _owner_dpy
+    lib = _lib()
+    if lib is None or not os.environ.get("DISPLAY"):
+        return None
+    try:
+        if not _owner_dpy:
+            _owner_dpy = lib.XOpenDisplay(None)
+            if not _owner_dpy:
+                return None
+            lib.XGetSelectionOwner.restype = ctypes.c_ulong
+            lib.XGetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            lib.XGetClassHint.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(_XClassHint)]
+            lib.XFree.argtypes = [ctypes.c_void_p]
+        dpy = _owner_dpy
+        win = lib.XGetSelectionOwner(dpy, lib.XInternAtom(dpy, b"CLIPBOARD", 0))
+        if not win:
+            return None
+        wm_class: list[str] = []
+        hint = _XClassHint()
+        if lib.XGetClassHint(dpy, win, ctypes.byref(hint)):
+            wm_class = [v.decode(errors="replace") for v in (hint.res_name, hint.res_class) if v]
+        pid = 0
+        xres = _xres()
+        if xres:
+            spec = _XResClientIdSpec(client=win, mask=2)  # XRES_CLIENT_ID_PID_MASK
+            num = ctypes.c_long(0)
+            ids = ctypes.POINTER(_XResClientIdValue)()
+            if xres.XResQueryClientIds(dpy, 1, ctypes.byref(spec), ctypes.byref(num), ctypes.byref(ids)) == 0:
+                for i in range(num.value):
+                    p = xres.XResGetClientPid(ctypes.byref(ids[i]))
+                    if p > 0:
+                        pid = p
+                        break
+                xres.XResClientIdsDestroy(num, ids)
+        names = process_names(pid) if pid else []
+        if not names and not wm_class:
+            return None
+        if names and names[0].lower() in PROXY_OWNERS or any(n.lower() in PROXY_OWNERS for n in names[:2]):
+            return None
+        return {"pid": pid, "names": names, "wm_class": wm_class}
+    except Exception:
+        log.debug("clipboard owner query failed", exc_info=True)
+        return None

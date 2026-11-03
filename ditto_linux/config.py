@@ -51,7 +51,8 @@ class Settings:
     move_duplicate_to_top: bool = True
     show_tray: bool = True
     lines_per_row: int = 1
-    ignore_apps: str = ""           # reserved, comma separated
+    ignore_apps: str = ""           # don't save copies from these apps (comma separated, * wildcards)
+    multi_paste_separator: str = "newline"  # between clips pasted together: newline|space|comma|tab|none
     gnome_shortcut_done: bool = False  # first-run Ctrl+` registration already attempted
     hotkey: str = "<Control>grave"  # global shortcut (GNOME accelerator syntax)
     check_shortcut: bool = True     # check the shortcut at start and ask about conflicts
