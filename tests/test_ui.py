@@ -431,10 +431,58 @@ class PasteKeystrokeTests(unittest.TestCase):
                                mock.Mock(returncode=0, stderr=b"")]
             p = Paster(Settings(paste_tool="auto"))
             p._ensure_ydotoold = lambda: True
+            p._legacy = False
             self.assertEqual(p.candidates(), ["wtype", "ydotool", "xdotool"])
-            self.assertTrue(p.paste())
+            with mock.patch("ditto_linux.paste.os.access", return_value=True):
+                self.assertTrue(p.paste())
             self.assertEqual(run.call_args_list[1].args[0][0], "ydotool")
             self.assertIn("YDOTOOL_SOCKET", run.call_args_list[1].kwargs["env"])
+
+
+class AutoPasteDiagnosisTests(unittest.TestCase):
+    def paster(self, **kw):
+        from ditto_linux.paste import Paster
+        return Paster(Settings(**kw))
+
+    def test_legacy_ydotool_uses_key_names_without_daemon(self):
+        p = self.paster(paste_shortcut="ctrl+shift+v")
+        p._legacy = True
+        cmd, env = p.command("ydotool")
+        self.assertEqual((cmd, env), (["ydotool", "key", "ctrl+shift+v"], None))
+        with mock.patch("ditto_linux.paste.shutil.which", side_effect=lambda t: "/usr/bin/" + t if t == "ydotool" else None), \
+                mock.patch("ditto_linux.paste.os.access", return_value=True), \
+                mock.patch("ditto_linux.paste.subprocess.run") as run, \
+                mock.patch.object(p, "_ensure_ydotoold") as daemon:
+            run.return_value = mock.Mock(returncode=0, stderr=b"")
+            self.assertTrue(p.paste())
+        daemon.assert_not_called()
+
+    def test_detects_legacy_from_help(self):
+        p = self.paster()
+        with mock.patch("ditto_linux.paste.subprocess.run",
+                        return_value=mock.Mock(stdout="Usage: ydotoold [OPTION...]", stderr="")):
+            self.assertTrue(p.ydotool_legacy())
+        p = self.paster()
+        with mock.patch("ditto_linux.paste.subprocess.run",
+                        return_value=mock.Mock(stdout="  -p, --socket-path=PATH", stderr="")):
+            self.assertFalse(p.ydotool_legacy())
+
+    def test_diagnosis_explains_missing_tool_and_permission(self):
+        p = self.paster()
+        with mock.patch("ditto_linux.paste.shutil.which", return_value=None), \
+                mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"}):
+            bad = [m for ok, m in p.diagnose() if not ok]
+        self.assertTrue(any("apt install ydotool" in m for m in bad))
+        p._legacy = False
+        with mock.patch("ditto_linux.paste.shutil.which", side_effect=lambda t: "/usr/bin/" + t), \
+                mock.patch("ditto_linux.paste.os.access", return_value=False), \
+                mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland", "WAYLAND_DISPLAY": "w"}):
+            bad = [m for ok, m in p.diagnose() if not ok]
+            self.assertTrue(any("/dev/uinput" in m for m in bad))
+            with mock.patch("ditto_linux.paste.subprocess.run") as run:
+                self.assertFalse(p.paste() and "wtype" not in p.candidates())
+            self.assertFalse(any(c.args[0][0] == "ydotool" for c in run.call_args_list),
+                             "ydotool is skipped without /dev/uinput access")
 
 
 class SettingsPersistenceTests(unittest.TestCase):

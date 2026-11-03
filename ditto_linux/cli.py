@@ -266,6 +266,29 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_paste_test(args) -> int:
+    """Send the paste keystroke to whatever window is focused after a countdown."""
+    import time
+    from .paste import Paster
+    settings = Settings.load()
+    paster = Paster(settings)
+    problems = [m for ok, m in paster.diagnose() if not ok]
+    for m in problems:
+        print(f"✗ {m}")
+    print(f"Copy some text, then click into a text field. Pasting with {settings.paste_shortcut} in", end="", flush=True)
+    for i in range(args.seconds, 0, -1):
+        print(f" {i}", end="", flush=True)
+        time.sleep(1)
+    print()
+    try:
+        ok = paster.paste()
+    finally:
+        paster.stop()
+    print("✓ keystroke sent: the text should have appeared." if ok else
+          "✗ could not send the keystroke; see the problems above and 'ditto-linux logs'.")
+    return 0 if ok else 1
+
+
 def cmd_doctor(args) -> int:
     import os
     import shutil
@@ -279,8 +302,10 @@ def cmd_doctor(args) -> int:
     print(f"database:   {args.db or default_db_path()}")
     print(f"settings:   {Settings.path()}")
     print(f"log:        {log_path()}")
-    tools = [t for t in ("wtype", "ydotool", "xdotool") if shutil.which(t)]
-    print(f"paste:      {'auto-paste ' + ('on' if settings.auto_paste else 'off')}; tools: {', '.join(tools) or 'none'}")
+    from .paste import Paster
+    print("auto-paste:")
+    for ok, msg in Paster(settings).diagnose():
+        print(f"  {'✓' if ok else '✗'} {msg}")
     rep = desktop.check(settings)
     print(f"shortcut:   {desktop.pretty(rep.binding)} ({rep.state})")
     for c in rep.conflicts:
@@ -405,6 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--check", action="store_true", help="only check, do not install")
     sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
     sub.add_parser("doctor", help="show version, paths, shortcut and paste setup")
+    sp = sub.add_parser("paste-test", help="send the paste keystroke after a countdown (checks auto-paste)")
+    sp.add_argument("-s", "--seconds", type=int, default=5)
     sp = sub.add_parser("report", help="report a problem as a GitHub issue (with logs and system info)")
     sp.add_argument("-t", "--title")
     sp.add_argument("-m", "--message", help="what happened")
@@ -439,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
         "list": cmd_list, "get": cmd_get, "add": cmd_add, "delete": cmd_delete, "clear": cmd_clear,
         "group": cmd_group, "sticky": cmd_flag, "never-delete": cmd_flag, "mask": cmd_flag, "pin": cmd_pin, "export": cmd_export,
         "import": cmd_import, "stats": cmd_stats, "cleanup": cmd_cleanup, "logs": cmd_logs,
-        "shortcut": cmd_shortcut, "update": cmd_update, "doctor": cmd_doctor, "report": cmd_report,
+        "shortcut": cmd_shortcut, "update": cmd_update, "doctor": cmd_doctor, "report": cmd_report, "paste-test": cmd_paste_test,
     }
     try:
         return handlers[cmd](args)

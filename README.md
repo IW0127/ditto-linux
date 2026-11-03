@@ -108,6 +108,19 @@ you were in, just like Ditto. It uses `wtype` (wlroots), `ydotool` (any session,
 on exit; this needs read/write access to `/dev/uinput` (usually the `input` group). The keystroke (`ctrl+v`,
 `ctrl+shift+v` for terminals, `shift+insert`) and the delay are set in Options.
 
+### Auto-paste not working?
+
+Run `ditto-linux doctor`: the *auto-paste* section shows what is missing. To fix it in one go:
+
+```
+curl -fsSL https://raw.githubusercontent.com/IW0127/ditto-linux/main/scripts/fix-autopaste.sh | bash
+```
+
+It updates Ditto, installs `ydotool` (plus `xdotool` on X11), loads the `uinput` module and adds a udev rule
+(`TAG+="uaccess"`) that lets the logged-in desktop user use `/dev/uinput`, then restarts Ditto. Check with
+`ditto-linux paste-test`. For terminals set the paste keystroke to `ctrl+shift+v` in Options. If auto-paste
+fails, Ditto now says so in a notification; the clip is still on the clipboard, so Ctrl+V works.
+
 ### Command line
 
 ```

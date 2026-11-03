@@ -78,9 +78,49 @@ class Paster:
     def _ydotool_usable(self) -> bool:
         return bool(shutil.which("ydotoold")) and os.access("/dev/uinput", os.R_OK | os.W_OK)
 
+    _legacy: bool | None = None
+
+    def ydotool_legacy(self) -> bool:
+        """ydotool 0.1.x (Ubuntu 22.04) has no socket option and takes key names; it needs no daemon."""
+        if self._legacy is None:
+            try:
+                r = subprocess.run(["ydotoold", "--help"], capture_output=True, text=True, timeout=5)
+                self._legacy = "socket-path" not in f"{r.stdout}{r.stderr}"
+            except (OSError, subprocess.SubprocessError):
+                self._legacy = not shutil.which("ydotoold")
+        return self._legacy
+
+    def diagnose(self) -> list[tuple[bool, str]]:
+        """What auto-paste needs on this system: [(ok, message)], problems explain the fix."""
+        out: list[tuple[bool, str]] = []
+        session = os.environ.get("XDG_SESSION_TYPE") or ("wayland" if os.environ.get("WAYLAND_DISPLAY") else "x11")
+        out.append((self.settings.auto_paste, "auto-paste is " + ("on" if self.settings.auto_paste else
+                                                                  "off (turn it on in Options)")))
+        tools = self.candidates()
+        if not tools:
+            want = "ydotool" if session == "wayland" else "xdotool (or ydotool)"
+            out.append((False, f"no paste tool installed: sudo apt install {want.split()[0]}"))
+        else:
+            out.append((True, f"paste tools found: {', '.join(tools)}"))
+        if "ydotool" in tools:
+            access = os.access("/dev/uinput", os.R_OK | os.W_OK)
+            out.append((access, "/dev/uinput is writable" if access else
+                        "no permission on /dev/uinput: run the fix script (adds a udev rule and the 'input' "
+                        "group), then log out and in"))
+            if self.ydotool_legacy():
+                out.append((True, "old ydotool (0.1.x): used without a helper daemon"))
+        if session == "wayland" and tools == ["xdotool"]:
+            out.append((False, "Wayland session: xdotool only reaches X11 apps; install ydotool"))
+        if session == "x11" and "xdotool" not in tools:
+            out.append((True, "tip: on X11 'sudo apt install xdotool' works without extra permissions"))
+        out.append((True, f"paste keystroke: {self.settings.paste_shortcut} "
+                          "(terminals need ctrl+shift+v: change it in Options)"))
+        return out
+
     def start(self) -> None:
         """Prepare helpers up front so the first paste is not delayed."""
-        if self.settings.auto_paste and "ydotool" in self.candidates() and self._ydotool_usable():
+        if (self.settings.auto_paste and "ydotool" in self.candidates() and self._ydotool_usable()
+                and not self.ydotool_legacy()):
             self._ensure_ydotoold()
 
     def _ensure_ydotoold(self) -> bool:
@@ -118,6 +158,8 @@ class Paster:
     # ------------------------------------------------------------------ paste
     def command(self, tool: str) -> tuple[list[str], dict | None]:
         shortcut = self.settings.paste_shortcut
+        if tool == "ydotool" and self.ydotool_legacy():
+            return ["ydotool", "key", "+".join(_keys(shortcut))], None
         if tool == "ydotool":
             env = dict(os.environ, YDOTOOL_SOCKET=self.ydotool_socket)
             return ["ydotool", "key", *_ydotool_args(shortcut)], env
@@ -129,8 +171,12 @@ class Paster:
         """Send the paste keystroke; tries each available tool until one succeeds."""
         with self._lock:
             for tool in self.candidates():
-                if tool == "ydotool" and not self._ensure_ydotoold():
-                    continue
+                if tool == "ydotool":
+                    if not os.access("/dev/uinput", os.R_OK | os.W_OK):
+                        log.warning("ydotool: no permission on /dev/uinput (see 'ditto-linux doctor')")
+                        continue
+                    if not self.ydotool_legacy() and not self._ensure_ydotoold():
+                        continue
                 cmd, env = self.command(tool)
                 try:
                     r = subprocess.run(cmd, env=env, timeout=5, capture_output=True)
@@ -142,5 +188,6 @@ class Paster:
                     log.debug("pasted with %s", tool)
                     return True
                 log.info("%s could not paste (exit %s): %s", tool, r.returncode, err)
-            log.warning("auto-paste unavailable: install wtype, xdotool or ydotool (see README)")
+            log.warning("auto-paste failed: %s", "; ".join(m for ok, m in self.diagnose() if not ok)
+                        or "no tool could send the keystroke")
             return False

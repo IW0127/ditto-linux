@@ -374,8 +374,22 @@ class DittoDaemon:
         if self.settings.auto_paste if simulate is None else simulate:
             # give the window manager time to return focus to the previous window
             QTimer.singleShot(max(0, self.settings.paste_delay_ms),
-                              lambda: threading.Thread(target=self.paster.paste, daemon=True).start())
+                              lambda: self.worker.run(self.paster.paste, self._on_pasted))
         return True
+
+    def _on_pasted(self, ok):
+        if ok is True:
+            return
+        log.warning("auto-paste did not work; the clip is on the clipboard (press Ctrl+V)")
+        if not getattr(self, "_paste_warned", False):
+            self._paste_warned = True
+            problems = [m for good, m in self.paster.diagnose() if not good]
+            msg = "Auto-paste did not work, the clip is on the clipboard: press Ctrl+V.\n" + (
+                problems[0] if problems else "Run 'ditto-linux doctor' for details.")
+            if self.tray:
+                self.tray.showMessage("Ditto", msg, QSystemTrayIcon.MessageIcon.Warning, 10000)
+            else:
+                QMessageBox.warning(None, "Ditto", msg)
 
     def copy_only(self, clip_id: int) -> bool:
         ok = self.monitor.set_clip(clip_id)
