@@ -7,18 +7,22 @@ import os
 import signal
 import sys
 import threading
+import time
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QDesktopServices
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import APP_NAME, __version__
+from . import desktop, update
+from .logs import install_qt_message_handler, log_path
 from .clipboard import ClipboardMonitor
 from .config import Settings, default_db_path, socket_path
 from .db import ClipStore
 from .ipc import is_running
 from .paste import Paster
+from .ui.dialogs import ShortcutDialog, UpdateDialog, exec_front
 from .ui.icons import app_icon
 from .ui.quickpaste import QuickPasteWindow
 from .ui.settings_dialog import SettingsDialog
@@ -39,9 +43,34 @@ def choose_platform() -> None:
         os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 
+class _Worker(QObject):
+    """Runs blocking work (network, pkexec) in a thread and reports back on the Qt thread."""
+    done = pyqtSignal(object, object)   # callback, result-or-exception
+
+    def __init__(self):
+        super().__init__()
+        self.done.connect(lambda cb, result: cb(result))
+
+    def run(self, fn, callback):
+        def target():
+            try:
+                result = fn()
+            except Exception as e:  # handed to the callback
+                result = e
+            self.done.emit(callback, result)
+        threading.Thread(target=target, daemon=True, name=getattr(fn, "__name__", "worker")).start()
+
+
+UPDATE_INTERVAL_S = 24 * 3600
+
+
 class DittoDaemon:
-    def __init__(self, app: QApplication, db_path: str, settings: Settings, sock: str, show_tray: bool = True):
+    def __init__(self, app: QApplication, db_path: str, settings: Settings, sock: str, show_tray: bool = True,
+                 argv: list[str] | None = None):
         self.app = app
+        self.argv = list(argv if argv is not None else sys.argv[1:])
+        self.worker = _Worker()
+        self._update_busy = False
         self.settings = settings
         self.store = ClipStore(db_path)
         self.monitor = ClipboardMonitor(self.store, settings)
@@ -52,6 +81,8 @@ class DittoDaemon:
         self.window.pasteRequested.connect(self.paste)
         self.window.copyRequested.connect(self.copy_only)
         self.window.settingsRequested.connect(self.open_settings)
+        self.window.updateRequested.connect(lambda: self.check_updates(manual=True))
+        self.window.shortcutRequested.connect(lambda: self.ask_shortcut(manual=True))
         self.monitor.clipCaptured.connect(self._on_capture)
         self.tray = None
         if show_tray and settings.show_tray and QSystemTrayIcon.isSystemTrayAvailable():
@@ -73,6 +104,10 @@ class DittoDaemon:
         self._maint.timeout.connect(self._maintenance)
         self._maint.start()
         self._maintenance()
+        self._update_timer = QTimer(interval=60 * 60 * 1000)
+        self._update_timer.timeout.connect(self.check_updates)
+        self._update_timer.start()
+        QTimer.singleShot(int(os.environ.get("DITTO_UPDATE_FIRST_CHECK_MS", "60000")), self.check_updates)
         log.info("ditto-linux %s running; db=%s socket=%s platform=%s", __version__, db_path, sock,
                  QApplication.platformName())
 
@@ -87,6 +122,9 @@ class DittoDaemon:
         menu.addAction(self.act_pause)
         menu.addSeparator()
         menu.addAction("Options…", self.open_settings)
+        menu.addAction("Check Shortcut…", lambda: self.ask_shortcut(manual=True))
+        menu.addAction("Check for Updates…", lambda: self.check_updates(manual=True))
+        menu.addAction("Open Log File", self.open_log)
         menu.addAction("Delete Clipboard History…", self._confirm_clear)
         menu.addSeparator()
         menu.addAction("Exit", self.quit)
@@ -109,9 +147,12 @@ class DittoDaemon:
             self.window.refresh()
 
     def open_settings(self):
-        dlg = SettingsDialog(self.settings, str(self.store.path), self.window if self.window.isVisible() else None)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        dlg = SettingsDialog(self.settings, str(self.store.path), self.window if self.window.isVisible() else None,
+                             on_shortcut=lambda: self.ask_shortcut(manual=True),
+                             on_update=lambda: self.check_updates(manual=True), on_log=self.open_log)
+        if exec_front(dlg) == QDialog.DialogCode.Accepted:
             dlg.apply().save()
+            log.info("settings saved")
             self._maintenance()
             self.paster.start()
             if self.settings.show_tray and not self.tray and QSystemTrayIcon.isSystemTrayAvailable():
@@ -140,8 +181,124 @@ class DittoDaemon:
         except Exception:
             log.exception("maintenance failed")
 
+    # ------------------------------------------------------------------ shortcut
+    def ask_shortcut(self, manual: bool = False, report: desktop.Report | None = None):
+        """Check the global shortcut and, if something is wrong, ask the user how to fix it."""
+        if not manual and not self.settings.check_shortcut:
+            return
+        report = report or desktop.check(self.settings)
+        log.info("shortcut check: %s %s%s", report.state, desktop.pretty(report.binding),
+                 "".join(f"; conflict: {c.description}" for c in report.conflicts))
+        if report.state == "unsupported":
+            if manual:
+                QMessageBox.information(None, "Ditto shortcut", "\n".join(report.notes))
+            return
+        if report.state == "ok":
+            if manual:
+                extra = ("\n\nNote: " + "; ".join(report.notes)) if report.notes else ""
+                QMessageBox.information(None, "Ditto shortcut",
+                                        f"{desktop.pretty(report.binding)} opens Ditto. Everything is fine.{extra}")
+            return
+        dlg = ShortcutDialog(report)
+        exec_front(dlg)
+        if dlg.dont_check:
+            self.settings.check_shortcut = False
+            self.settings.save()
+        try:
+            if dlg.choice == "take_over":
+                new = desktop.resolve(self.settings, report.binding, take_over=True)
+            elif dlg.choice == "use_key":
+                new = desktop.resolve(self.settings, dlg.key, take_over=False)
+                if new.state == "conflict":
+                    self.ask_shortcut(manual=True, report=new)
+                    return
+            else:
+                log.info("shortcut problem left as is (%s)", report.state)
+                return
+        except (OSError, ValueError) as e:
+            log.exception("could not change the shortcut")
+            QMessageBox.warning(None, "Ditto shortcut", f"Could not change the shortcut: {e}")
+            return
+        log.info("shortcut after fix: %s %s", new.state, desktop.pretty(new.binding))
+
+    # ------------------------------------------------------------------ updates
+    def check_updates(self, manual: bool = False):
+        if self._update_busy:
+            return
+        if not manual:
+            if (not self.settings.auto_update_check or os.environ.get("DITTO_NO_UPDATE_CHECK")
+                    or time.time() - self.settings.last_update_check < UPDATE_INTERVAL_S):
+                return
+        self._update_busy = True
+        self.worker.run(update.latest, lambda result: self._on_update_checked(result, manual))
+
+    def _on_update_checked(self, result, manual: bool):
+        self._update_busy = False
+        if isinstance(result, Exception):
+            log.warning("%s", result)
+            if manual:
+                QMessageBox.warning(None, "Ditto update", str(result))
+            return
+        self.settings.last_update_check = time.time()
+        self.settings.save()
+        log.info("update check: latest %s, running %s", result.version, __version__)
+        if not update.is_newer(result.version):
+            if manual:
+                QMessageBox.information(None, "Ditto update", f"Ditto {__version__} is up to date.")
+            return
+        if not manual and result.version == self.settings.skipped_version:
+            log.info("update %s skipped by the user", result.version)
+            return
+        kind = update.install_kind()
+        dlg = UpdateDialog(result, kind)
+        exec_front(dlg)
+        log.info("update %s: user chose %s", result.version, dlg.choice)
+        if dlg.choice == "skip":
+            self.settings.skipped_version = result.version
+            self.settings.save()
+        elif dlg.choice == "open":
+            QDesktopServices.openUrl(QUrl(result.url))
+        elif dlg.choice == "install":
+            self.install_update(result, kind)
+
+    def install_update(self, release, kind: str):
+        self._update_busy = True
+        if self.tray:
+            self.tray.showMessage("Ditto", f"Downloading Ditto {release.version}…")
+
+        def work():
+            path = update.download(release, kind)
+            update.install(path, kind, gui=True)
+            return release.version
+        self.worker.run(work, self._on_update_installed)
+
+    def _on_update_installed(self, result):
+        self._update_busy = False
+        if isinstance(result, Exception):
+            log.error("update failed: %s", result)
+            QMessageBox.warning(None, "Ditto update", f"The update failed:\n{result}\n\nLog: {log_path()}")
+            return
+        log.info("updated to %s; restarting", result)
+        self.restart(after_update=True)
+
+    def restart(self, after_update: bool = False):
+        """Replace this process with a fresh daemon (same PID, so service managers keep tracking it)."""
+        argv = update.restart_argv(self.argv) if after_update else update.self_argv(self.argv)
+        log.info("restarting: %s", " ".join(argv))
+        self.paster.stop()
+        self.server.close()
+        QLocalServer.removeServer(self.sock_path)
+        self.store.close()
+        logging.shutdown()
+        os.execv(argv[0], argv)
+
+    def open_log(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_path())))
+
     def paste(self, clip_id: int, plain: bool = False, simulate: bool | None = None) -> bool:
+        log.info("paste clip %s (plain=%s)", clip_id, plain)
         if not self.monitor.set_clip(clip_id, plain):
+            log.warning("clip %s has no data to paste", clip_id)
             return False
         self.store.mark_pasted(clip_id, self.settings.move_duplicate_to_top)
         self.window.hide()
@@ -158,6 +315,7 @@ class DittoDaemon:
         return ok
 
     def quit(self):
+        log.info("ditto-linux %s stopping", __version__)
         self.paster.stop()
         self.server.close()
         QLocalServer.removeServer(self.sock_path)
@@ -187,6 +345,8 @@ class DittoDaemon:
 
     def handle(self, req: dict) -> dict:
         cmd = req.get("cmd")
+        if cmd not in ("ping", "status", "clipboard"):
+            log.debug("ipc: %s", cmd)
         if cmd == "ping":
             return {"ok": True, "version": __version__, "pid": os.getpid()}
         if cmd == "status":
@@ -233,6 +393,16 @@ class DittoDaemon:
             self.settings.__dict__.update(new.__dict__)
             self.paster.start()
             return {"ok": True}
+        if cmd == "restart":
+            after_update = bool(req.get("update"))
+            QTimer.singleShot(100, lambda: self.restart(after_update=after_update))
+            return {"ok": True}
+        if cmd == "check-shortcut":
+            QTimer.singleShot(0, lambda: self.ask_shortcut(manual=True))
+            return {"ok": True}
+        if cmd == "check-updates":
+            QTimer.singleShot(0, lambda: self.check_updates(manual=True))
+            return {"ok": True}
         if cmd == "quit":
             QTimer.singleShot(0, self.quit)
             return {"ok": True}
@@ -257,10 +427,14 @@ def run_daemon(db_path: str | None = None, show_window: bool = False, tray: bool
     app.setDesktopFileName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(app_icon())
+    install_qt_message_handler()
     settings = Settings.load()
-    from .desktop import ensure_gnome_shortcut
-    ensure_gnome_shortcut(settings)
+    shortcut = desktop.ensure_gnome_shortcut(settings)
+    log.info("starting ditto-linux %s (%s install, python %s, log %s); shortcut %s: %s", __version__,
+             update.install_kind(), sys.version.split()[0], log_path(), desktop.pretty(settings.hotkey), shortcut)
     daemon = DittoDaemon(app, str(db_path or default_db_path()), settings, sock, show_tray=tray)
+    if shortcut in ("taken", "missing"):
+        QTimer.singleShot(1500, daemon.ask_shortcut)
     # Ctrl+C / SIGTERM: Python only handles signals while the interpreter runs, so wake it periodically.
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: QTimer.singleShot(0, daemon.quit))

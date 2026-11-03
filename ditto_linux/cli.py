@@ -142,6 +142,129 @@ def cmd_pin(args) -> int:
     return 0
 
 
+def cmd_logs(args) -> int:
+    from .logs import log_path, tail
+    if args.path:
+        print(log_path())
+        return 0
+    lines = tail(args.lines)
+    if not lines:
+        print(f"no log yet ({log_path()})", file=sys.stderr)
+    sys.stdout.writelines(lines)
+    if args.follow:
+        import time
+        with open(log_path(), encoding="utf-8", errors="replace") as f:
+            f.seek(0, 2)
+            try:
+                while True:
+                    line = f.readline()
+                    if line:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                    else:
+                        time.sleep(0.3)
+            except KeyboardInterrupt:
+                pass
+    return 0
+
+
+def cmd_shortcut(args) -> int:
+    from . import desktop
+    settings = Settings.load()
+    if args.set:
+        try:
+            accel = desktop.from_portable(args.set)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        if not desktop.supported():
+            print("error: changing the shortcut is only supported on GNOME", file=sys.stderr)
+            return 1
+        rep = desktop.resolve(settings, accel, take_over=args.take_over)
+    elif args.fix or args.take_over:
+        if not desktop.supported():
+            print("error: fixing the shortcut is only supported on GNOME", file=sys.stderr)
+            return 1
+        rep = desktop.resolve(settings, None, take_over=args.take_over)
+    else:
+        rep = desktop.check(settings)
+    if args.json:
+        print(json.dumps(rep.to_dict(), indent=2))
+    else:
+        print(f"shortcut: {desktop.pretty(rep.binding)}   state: {rep.state}")
+        if rep.command:
+            print(f"command:  {rep.command}")
+        for c in rep.conflicts:
+            print(f"conflict: {c.description}" + ("" if c.fixable else "  (cannot be changed by Ditto)"))
+        for n in rep.notes:
+            print(f"note:     {n}")
+        if rep.state in ("missing", "broken"):
+            print(f"fix with: {APP_NAME} shortcut --fix")
+        elif rep.state == "conflict":
+            print(f"fix with: {APP_NAME} shortcut --take-over   (or --set 'Ctrl+Alt+V')")
+    return 0 if rep.state in ("ok", "unsupported") else 1
+
+
+def cmd_update(args) -> int:
+    from . import update
+    try:
+        rel = update.latest()
+    except update.UpdateError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    kind = update.install_kind()
+    newer = update.is_newer(rel.version)
+    print(f"installed: {__version__} ({kind})   latest: {rel.version}   {rel.url}")
+    if not newer:
+        print("Ditto is up to date.")
+        return 0
+    if args.check:
+        return 0
+    if kind == "git":
+        print("This is a git checkout: update it with 'git pull'.")
+        return 0
+    if not args.yes and sys.stdin.isatty():
+        if input(f"Install Ditto {rel.version} now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+            return 0
+    try:
+        path = update.download(rel, kind)
+        print(f"downloaded and verified {path.name}")
+        update.install(path, kind, gui=not sys.stdin.isatty())
+    except update.UpdateError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"Ditto {rel.version} installed.")
+    try:
+        request("restart", update=True, timeout=2)
+        print("Restarted the running Ditto.")
+    except (ConnectionError, OSError, ValueError):
+        pass
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    import os
+    import shutil
+    from . import desktop, update
+    from .ipc import is_running
+    from .logs import log_path
+    settings = Settings.load()
+    print(f"version:    {__version__} ({update.install_kind()} install, python {sys.version.split()[0]})")
+    print(f"session:    {os.environ.get('XDG_SESSION_TYPE', '?')} / {os.environ.get('XDG_CURRENT_DESKTOP', '?')}")
+    print(f"daemon:     {'running' if is_running() else 'not running'}")
+    print(f"database:   {args.db or default_db_path()}")
+    print(f"settings:   {Settings.path()}")
+    print(f"log:        {log_path()}")
+    tools = [t for t in ("wtype", "ydotool", "xdotool") if shutil.which(t)]
+    print(f"paste:      {'auto-paste ' + ('on' if settings.auto_paste else 'off')}; tools: {', '.join(tools) or 'none'}")
+    rep = desktop.check(settings)
+    print(f"shortcut:   {desktop.pretty(rep.binding)} ({rep.state})")
+    for c in rep.conflicts:
+        print(f"  conflict: {c.description}")
+    print(f"updates:    {'daily check on' if settings.auto_update_check else 'off'}")
+    return 0
+
+
 def cmd_export(args) -> int:
     text = dumps_export(_store(args))
     if args.file == "-":
@@ -242,6 +365,20 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--off", action="store_true")
         sp.set_defaults(flag=flag)
 
+    sub.add_parser("restart", help="restart the running daemon")
+    sp = sub.add_parser("logs", help="show the log file (for troubleshooting)")
+    sp.add_argument("-n", "--lines", type=int, default=50)
+    sp.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
+    sp.add_argument("--path", action="store_true", help="only print where the log is")
+    sp = sub.add_parser("shortcut", help="check / fix the global shortcut (GNOME)")
+    sp.add_argument("--fix", action="store_true", help="repair Ditto's shortcut")
+    sp.add_argument("--take-over", action="store_true", help="also remove the key from conflicting shortcuts")
+    sp.add_argument("--set", metavar="KEY", help="use another key, e.g. 'Ctrl+Alt+V' or '<Super>v'")
+    sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("update", help="check for a new release and install it")
+    sp.add_argument("--check", action="store_true", help="only check, do not install")
+    sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    sub.add_parser("doctor", help="show version, paths, shortcut and paste setup")
     sp = sub.add_parser("export", help="export all clips to JSON")
     sp.add_argument("file", nargs="?", default="-")
     sp = sub.add_parser("import", help="import clips from a JSON export")
@@ -256,20 +393,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cmd = args.command or "daemon"
+    from .logs import setup_logging
+    setup_logging(verbose=args.verbose, daemon=cmd == "daemon")
     if cmd == "daemon":
         from .app import run_daemon  # Qt is only imported when needed
         return run_daemon(args.db, show_window=getattr(args, "show", False), tray=not getattr(args, "no_tray", False))
-    if cmd in ("show", "toggle", "hotkey", "hide", "pause", "resume", "status", "quit"):
+    if cmd in ("show", "toggle", "hotkey", "hide", "pause", "resume", "status", "quit", "restart"):
         return _ipc(cmd)
     if cmd in ("paste", "copy"):
         return _ipc(cmd, id=args.id, plain=args.plain)
     handlers = {
         "list": cmd_list, "get": cmd_get, "add": cmd_add, "delete": cmd_delete, "clear": cmd_clear,
         "group": cmd_group, "sticky": cmd_flag, "never-delete": cmd_flag, "mask": cmd_flag, "pin": cmd_pin, "export": cmd_export,
-        "import": cmd_import, "stats": cmd_stats, "cleanup": cmd_cleanup,
+        "import": cmd_import, "stats": cmd_stats, "cleanup": cmd_cleanup, "logs": cmd_logs,
+        "shortcut": cmd_shortcut, "update": cmd_update, "doctor": cmd_doctor,
     }
     try:
         return handlers[cmd](args)

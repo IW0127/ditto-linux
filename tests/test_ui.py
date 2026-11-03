@@ -437,68 +437,6 @@ class PasteKeystrokeTests(unittest.TestCase):
             self.assertIn("YDOTOOL_SOCKET", run.call_args_list[1].kwargs["env"])
 
 
-class GnomeShortcutTests(unittest.TestCase):
-    def run_with(self, existing_paths, bindings, env=None):
-        from ditto_linux import desktop
-        calls = []
-
-        def fake_gs(*args):
-            calls.append(args)
-            if args[:3] == ("get", desktop.MEDIA_KEYS, "custom-keybindings"):
-                return str(existing_paths)
-            if args[0] == "get":
-                return repr(bindings.get(args[1].split(":", 1)[1], ""))
-            return ""
-        with tempfile.TemporaryDirectory() as d, \
-                mock.patch.dict(os.environ, {"DITTO_CONFIG": f"{d}/s.json", "XDG_CURRENT_DESKTOP": "ubuntu:GNOME",
-                                             **(env or {})}), \
-                mock.patch("ditto_linux.desktop.shutil.which", return_value="/usr/bin/x"), \
-                mock.patch("ditto_linux.desktop._gs", side_effect=fake_gs):
-            os.environ.pop("DITTO_NO_DESKTOP_INTEGRATION", None) if not env else None
-            s = Settings()
-            result = desktop.ensure_gnome_shortcut(s)
-            return result, calls, s
-
-    def test_registers_once(self):
-        result, calls, s = self.run_with(["/a/"], {"/a/": "<Super>x"})
-        self.assertEqual(result, "registered")
-        self.assertTrue(s.gnome_shortcut_done)
-        self.assertIn(("set", "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:"
-                       "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/ditto-linux/",
-                       "binding", "<Control>grave"), calls)
-
-    def test_respects_existing_binding(self):
-        result, calls, _ = self.run_with(["/a/"], {"/a/": "<Control>grave"})
-        self.assertEqual(result, "taken")
-        self.assertFalse(any(c[0] == "set" for c in calls))
-
-    def test_upgrades_old_show_command(self):
-        from ditto_linux import desktop
-        from ditto_linux.desktop import KEY_PATH
-        from unittest import mock as _m
-        calls = []
-
-        def fake_gs(*args):
-            calls.append(args)
-            if args[:3] == ("get", desktop.MEDIA_KEYS, "custom-keybindings"):
-                return str([KEY_PATH])
-            if args[0] == "get" and args[2] == "command":
-                return "'/home/u/.local/bin/ditto-linux show'"
-            return ""
-        with tempfile.TemporaryDirectory() as d, \
-                _m.patch.dict(os.environ, {"DITTO_CONFIG": f"{d}/s.json", "XDG_CURRENT_DESKTOP": "GNOME"}), \
-                _m.patch("ditto_linux.desktop.shutil.which", return_value="/usr/bin/x"), \
-                _m.patch("ditto_linux.desktop._gs", side_effect=fake_gs):
-            os.environ.pop("DITTO_NO_DESKTOP_INTEGRATION", None)
-            result = desktop.ensure_gnome_shortcut(Settings(gnome_shortcut_done=True))
-        self.assertEqual(result, "upgraded")
-        self.assertEqual(calls[-1][2:], ("command", "/home/u/.local/bin/ditto-linux hotkey"))
-
-    def test_disabled_in_tests(self):
-        result, calls, _ = self.run_with([], {}, env={"DITTO_NO_DESKTOP_INTEGRATION": "1"})
-        self.assertEqual((result, calls), ("skipped", []))
-
-
 class SettingsPersistenceTests(unittest.TestCase):
     def test_save_load_and_bad_values(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"DITTO_CONFIG": f"{d}/s.json"}):

@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QSpinBox, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QSpinBox,
+    QVBoxLayout,
 )
 
+from .. import __version__
 from ..config import Settings
+from ..desktop import pretty
+from ..logs import log_path
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, db_path: str, parent=None):
+    def __init__(self, settings: Settings, db_path: str, parent=None, on_shortcut=None, on_update=None,
+                 on_log=None):
         super().__init__(parent)
         self.setWindowTitle("Ditto Options")
         self.settings = settings
@@ -32,6 +37,18 @@ class SettingsDialog(QDialog):
         self.hide_focus = QCheckBox("Hide the Quick Paste window when it loses focus",
                                     checked=settings.hide_on_focus_loss)
         self.tray = QCheckBox("Show tray icon", checked=settings.show_tray)
+        self.check_shortcut = QCheckBox("Check the global shortcut when Ditto starts",
+                                        checked=settings.check_shortcut)
+        self.auto_update = QCheckBox("Check for updates once a day", checked=settings.auto_update_check)
+
+        def row(label: str, button_text: str, callback):
+            box = QHBoxLayout()
+            box.addWidget(QLabel(label, wordWrap=True), 1)
+            if callback:
+                b = QPushButton(button_text)
+                b.clicked.connect(callback)
+                box.addWidget(b)
+            return box
 
         form = QFormLayout()
         form.addRow("Maximum saved copies:", self.max_clips)
@@ -46,6 +63,11 @@ class SettingsDialog(QDialog):
         form.addRow("Delay before pasting:", self.delay)
         form.addRow(self.hide_focus)
         form.addRow(self.tray)
+        form.addRow("Global shortcut:", row(pretty(settings.hotkey), "Check / Change…", on_shortcut))
+        form.addRow(self.check_shortcut)
+        form.addRow("Version:", row(__version__, "Check for Updates…", on_update))
+        form.addRow(self.auto_update)
+        form.addRow("Log file:", row(str(log_path()), "Open", on_log))
         form.addRow("Database:", QLabel(db_path, wordWrap=True))
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -69,4 +91,6 @@ class SettingsDialog(QDialog):
         s.paste_delay_ms = self.delay.value()
         s.hide_on_focus_loss = self.hide_focus.isChecked()
         s.show_tray = self.tray.isChecked()
+        s.check_shortcut = self.check_shortcut.isChecked()
+        s.auto_update_check = self.auto_update.isChecked()
         return s

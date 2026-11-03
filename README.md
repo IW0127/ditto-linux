@@ -12,14 +12,14 @@ can be opened here. Older databases are upgraded in place.
 **Ubuntu / Debian (recommended):**
 
 ```bash
-sudo apt install ./ditto-linux_1.1.0_all.deb
+sudo apt install ./ditto-linux_1.2.0_all.deb
 ```
 
 It starts automatically at your next login, or right away from the app menu ("Ditto"). On GNOME the first
 start registers **Ctrl+`** to open Quick Paste (unless that key is already taken). `ydotool` is installed as a
 recommended package for auto-paste.
 
-**Other distributions:** unpack `ditto-linux-1.1.0.tar.gz` and run `./install.sh --shortcut`.
+**Other distributions:** unpack `ditto-linux-1.2.0.tar.gz` and run `./install.sh --shortcut`.
 
 **Building the release files:** `scripts/build-release.sh` writes the `.deb`, the tarball and `SHA256SUMS` to `dist/`.
 
@@ -109,8 +109,35 @@ ditto-linux group create NAME | list | move GROUP ID...
 ditto-linux pin ID [--title T] [--hide] [--up N] [--off]   # pin, title, hide content, reorder
 ditto-linux sticky ID [--off]  |  never-delete ID [--off]  |  mask ID [--off]
 ditto-linux export [FILE]  |  import FILE  |  stats
-ditto-linux show | toggle | hotkey | hide | pause | resume | status | quit
+ditto-linux show | toggle | hotkey | hide | pause | resume | status | restart | quit
+ditto-linux update [--check] [-y]  |  shortcut [--fix] [--take-over] [--set KEY]  |  logs [-f]  |  doctor
 ```
+
+## Updates, shortcut check and logs
+
+**Updates.** Once a day Ditto checks the [releases](https://github.com/IW0127/ditto-linux/releases). When a
+new version is out it shows a popup (*Install and restart* / *Skip this version* / *Later*). For the `.deb` it
+downloads the package, verifies it against `SHA256SUMS`, installs it with `pkexec apt-get` (you are asked for
+your password) and restarts itself. A per-user (tarball) install is updated with the bundled `install.sh`; a git
+checkout is only notified. Turn it off in Options, or check by hand from the tray / ☰ menu or with
+`ditto-linux update` (`--check` to only look).
+
+**Shortcut check.** Every time Ditto starts it checks its global shortcut (GNOME):
+a broken entry (e.g. pointing at an uninstalled launcher) is repaired, a key you changed in GNOME Settings is
+kept, and if the key is also used by another shortcut, a clipboard extension or CopyQ, a popup offers to
+**take the key over** (removes it from the other shortcut) or **use another key**. From a terminal:
+
+```
+ditto-linux shortcut                 # report: ok / missing / broken / conflict
+ditto-linux shortcut --fix           # repair Ditto's entry
+ditto-linux shortcut --take-over     # also remove the key from conflicting shortcuts
+ditto-linux shortcut --set 'Ctrl+Alt+V'
+```
+
+**Logs.** Ditto logs to `~/.local/state/ditto-linux/ditto.log` (rotated at 1 MB, 3 old copies; clip
+contents are never logged, only ids): start/stop, shortcut checks and fixes, updates, pastes and the Ctrl+`
+cycling, Qt warnings and any crash with its traceback. `ditto-linux logs` (`-f` to follow, `--path`),
+*Open Log File* in the tray menu, and `ditto-linux doctor` for a summary of the setup.
 
 ## Wayland notes
 

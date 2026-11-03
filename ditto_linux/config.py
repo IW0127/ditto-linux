@@ -53,6 +53,11 @@ class Settings:
     lines_per_row: int = 1
     ignore_apps: str = ""           # reserved, comma separated
     gnome_shortcut_done: bool = False  # first-run Ctrl+` registration already attempted
+    hotkey: str = "<Control>grave"  # global shortcut (GNOME accelerator syntax)
+    check_shortcut: bool = True     # check the shortcut at start and ask about conflicts
+    auto_update_check: bool = True  # look for a new release once a day
+    last_update_check: float = 0.0
+    skipped_version: str = ""       # "Skip this version" in the update popup
 
     @classmethod
     def path(cls) -> Path:

@@ -25,7 +25,8 @@ install -d "$PKG/usr/bin"
 cat > "$PKG/usr/bin/ditto-linux" <<'EOF'
 #!/bin/sh
 # Ditto for Linux launcher
-PYTHONPATH=/usr/lib/ditto-linux${PYTHONPATH:+:$PYTHONPATH} exec /usr/bin/python3 -m ditto_linux "$@"
+# (not "python3 -m": that would import a ditto_linux folder from the current directory first)
+exec /usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from ditto_linux.cli import main; sys.exit(main())' /usr/lib/ditto-linux "$@"
 EOF
 chmod 0755 "$PKG/usr/bin/ditto-linux"
 install -D -m 0644 data/ditto-linux.desktop "$PKG/usr/share/applications/ditto-linux.desktop"
@@ -69,6 +70,13 @@ set -e
 if [ "$1" = "configure" ]; then
     command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q /usr/share/icons/hicolor || true
     command -v py3compile >/dev/null && py3compile -q /usr/lib/ditto-linux || true
+    # restart running instances so they use the new version (their history is untouched)
+    for sock in /run/user/*/ditto-linux.sock; do
+        [ -S "$sock" ] || continue
+        uid=$(stat -c %u "$sock"); user=$(stat -c %U "$sock")
+        timeout 5 runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" /usr/bin/ditto-linux restart \
+            >/dev/null 2>&1 || true
+    done
 fi
 exit 0
 EOF

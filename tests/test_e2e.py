@@ -222,6 +222,20 @@ class DaemonE2E(unittest.TestCase):
         wait_for(lambda: self.iso.cli_json("status")["visible"], what="second launch shows window")
         self.iso.cli("hide")
 
+    def test_17_log_file_and_restart(self):
+        log = self.iso.log
+        wait_for(lambda: log.exists() and "starting ditto-linux" in log.read_text(), what="daemon log file")
+        self.assertNotIn("Traceback", log.read_text())
+        pid = self.iso.cli_json("status") and self.daemon.pid
+        self.iso.cli("restart")
+        wait_for(lambda: log.read_text().count("starting ditto-linux") >= 2, timeout=20, what="restarted daemon")
+        wait_for(lambda: self.iso.cli("status", check=False).returncode == 0, timeout=20, what="daemon answering")
+        self.assertEqual(self.daemon.pid, pid, "restart keeps the same process (exec)")
+        self.assertIsNone(self.daemon.poll())
+        self.assertIn("restarting:", log.read_text())
+        cid = int(self.iso.cli("add", "after restart").stdout)
+        self.assertIn(cid, [c["id"] for c in self.iso.cli_json("list", "--json", "-s", "after restart")])
+
     def test_99_quit_cleans_up(self):
         self.iso.cli("quit")
         self.assertEqual(self.daemon.wait(10), 0, self.daemon_log())

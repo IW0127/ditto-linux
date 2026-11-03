@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 
 import difflib
 import html as _html
@@ -17,6 +18,8 @@ from PyQt6.QtWidgets import (
 
 from .. import formats as fmt
 from ..db import NO_PARENT, Clip, ClipStore
+
+log = logging.getLogger(__name__)
 
 ROLE_ID = Qt.ItemDataRole.UserRole
 ROLE_GROUP = Qt.ItemDataRole.UserRole + 1
@@ -70,6 +73,8 @@ class QuickPasteWindow(QWidget):
     pasteRequested = pyqtSignal(int, bool)  # clip id, plain text only
     copyRequested = pyqtSignal(int)         # put clip on the clipboard, no paste, keep window
     settingsRequested = pyqtSignal()
+    updateRequested = pyqtSignal()
+    shortcutRequested = pyqtSignal()
 
     def __init__(self, store: ClipStore, parent=None, settings=None):
         super().__init__(parent)
@@ -166,6 +171,8 @@ class QuickPasteWindow(QWidget):
         m.addSeparator()
         m.addAction("Keyboard Shortcuts…", self.show_shortcuts)
         m.addAction("Settings…", self.settingsRequested.emit)
+        m.addAction("Check Shortcut…", self.shortcutRequested.emit)
+        m.addAction("Check for Updates…", self.updateRequested.emit)
         self.menu_btn.setMenu(m)
 
     # Ditto's default Quick Paste keys (ActionEnums::GetDefaultShortCutKeyA) plus a few extras.
@@ -491,6 +498,7 @@ class QuickPasteWindow(QWidget):
             self._move(1)
         self._released_ticks = 0
         self._hotkey_watch.start()
+        log.info("hotkey press %d (row %d)", self._hotkey_presses, self.list.currentRow())
 
     def _check_hotkey_modifier(self):
         if not self.isVisible():
@@ -507,6 +515,7 @@ class QuickPasteWindow(QWidget):
         presses = self._hotkey_presses
         self._reset_hotkey()
         if presses >= 2 and self.isVisible():
+            log.info("Ctrl released after %d presses: pasting row %d", presses, self.list.currentRow())
             self.paste_selected()
 
     def _reset_hotkey(self):

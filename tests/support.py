@@ -33,7 +33,8 @@ class IsolatedEnv:
         self.db = self.tmp / "Ditto.db"
         self.config = self.tmp / "settings.json"
         self.socket = str(self.tmp / "ditto.sock")
-        base = {"auto_paste": False, "show_tray": False, "gnome_shortcut_done": True}
+        base = {"auto_paste": False, "show_tray": False, "gnome_shortcut_done": True,
+                "auto_update_check": False, "check_shortcut": False}
         base.update(settings or {})
         self.config.write_text(json.dumps(base))
         self.env = dict(os.environ)
@@ -41,7 +42,12 @@ class IsolatedEnv:
             "DITTO_DB": str(self.db), "DITTO_CONFIG": str(self.config), "DITTO_SOCKET": self.socket,
             "XDG_CONFIG_HOME": str(self.tmp / "config"), "XDG_DATA_HOME": str(self.tmp / "data"),
             "PYTHONPATH": str(ROOT), "PYTHONDONTWRITEBYTECODE": "1", "DITTO_NO_DESKTOP_INTEGRATION": "1",
+            "XDG_STATE_HOME": str(self.tmp / "state"), "XDG_CACHE_HOME": str(self.tmp / "cache"),
+            "DITTO_NO_UPDATE_CHECK": "1",
         })
+        self.env.pop("DITTO_LOG", None)
+        self.env.pop("DITTO_UPDATE_URL", None)
+        self.log = self.tmp / "state" / "ditto-linux" / "ditto.log"
 
     def cli(self, *args, input: str | None = None, check: bool = True, timeout: float = 30):
         r = subprocess.run([sys.executable, "-m", "ditto_linux", *map(str, args)], env=self.env, cwd=ROOT,

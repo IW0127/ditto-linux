@@ -42,7 +42,7 @@ python3 -c "import PyQt6.QtWidgets" 2>/dev/null || {
 mkdir -p "$(dirname "$BIN")" "$(dirname "$APPS")" "$(dirname "$AUTOSTART")"
 cat > "$BIN" <<EOF
 #!/usr/bin/env bash
-PYTHONPATH="$ROOT\${PYTHONPATH:+:\$PYTHONPATH}" exec python3 -m ditto_linux "\$@"
+exec python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from ditto_linux.cli import main; sys.exit(main())' "$ROOT" "\$@"
 EOF
 chmod +x "$BIN"
 sed "s#Exec=ditto-linux#Exec=$BIN#" "$ROOT/data/ditto-linux.desktop" > "$APPS"
