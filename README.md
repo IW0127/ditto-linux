@@ -12,14 +12,14 @@ can be opened here. Older databases are upgraded in place.
 **Ubuntu / Debian (recommended):**
 
 ```bash
-sudo apt install ./ditto-linux_1.3.0_all.deb
+sudo apt install ./ditto-linux_1.3.1_all.deb
 ```
 
 It starts automatically at your next login, or right away from the app menu ("Ditto"). On GNOME the first
 start registers **Ctrl+`** to open Quick Paste (unless that key is already taken). `ydotool` is installed as a
 recommended package for auto-paste.
 
-**Other distributions:** unpack `ditto-linux-1.3.0.tar.gz` and run `./install.sh --shortcut`.
+**Other distributions:** unpack `ditto-linux-1.3.1.tar.gz` and run `./install.sh --shortcut`.
 
 **Building the release files:** `scripts/build-release.sh` writes the `.deb`, the tarball and `SHA256SUMS` to `dist/`.
 
