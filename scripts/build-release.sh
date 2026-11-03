@@ -51,7 +51,7 @@ Version: $VER
 Section: utils
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.10), python3-pyqt6
+Depends: python3 (>= 3.10), python3-pyqt6, libxres1
 Recommends: ydotool
 Suggests: wtype, xdotool
 Installed-Size: $SIZE

@@ -373,10 +373,7 @@ class DaemonDecisionTests(unittest.TestCase):
         self.settings = Settings.load()
         self.daemon = DittoDaemon(app, str(self.iso.db), self.settings, self.iso.socket, show_tray=False,
                                   argv=["daemon", "--no-tray"])
-        self.addCleanup(self.daemon.server.close)
-        self.addCleanup(self.daemon.store.close)
-        self.addCleanup(lambda: __import__("logging").getLogger().removeHandler(self.daemon.problem_handler))
-        self.addCleanup(self.daemon.paster.stop)
+        self.addCleanup(self.daemon.close)
 
     def test_shortcut_popup_take_over(self):
         from ditto_linux.ui import dialogs

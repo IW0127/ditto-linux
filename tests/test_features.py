@@ -148,9 +148,7 @@ class DaemonPasteManyTests(unittest.TestCase):
         self.addCleanup(p.stop)
         self.settings = Settings.load()
         self.d = DittoDaemon(app, str(self.iso.db), self.settings, self.iso.socket, show_tray=False, argv=[])
-        for fn in (self.d.server.close, self.d.store.close, self.d.paster.stop,
-                   lambda: __import__("logging").getLogger().removeHandler(self.d.problem_handler)):
-            self.addCleanup(fn)
+        self.addCleanup(self.d.close)
         self.a = self.d.store.add_text("first line")[0]
         self.b = self.d.store.add_text("  second line ")[0]
 

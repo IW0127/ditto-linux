@@ -167,6 +167,29 @@ def process_names(pid: int) -> list[str]:
     return out
 
 
+def _net_wm_pid(lib, dpy, win: int) -> int:
+    """_NET_WM_PID of a window (fallback when the XRes extension library is not installed)."""
+    try:
+        lib.XGetWindowProperty.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_long, ctypes.c_long, ctypes.c_int,
+            ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_void_p)]
+        atom = lib.XInternAtom(dpy, b"_NET_WM_PID", 1)
+        if not atom:
+            return 0
+        typ, fmt_, n, after, data = ctypes.c_ulong(), ctypes.c_int(), ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_void_p()
+        ok = lib.XGetWindowProperty(dpy, win, atom, 0, 1, 0, 6, ctypes.byref(typ), ctypes.byref(fmt_),  # XA_CARDINAL
+                                    ctypes.byref(n), ctypes.byref(after), ctypes.byref(data))
+        pid = 0
+        if ok == 0 and data.value and n.value and fmt_.value == 32:
+            pid = ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[0]
+        if data.value:
+            lib.XFree(data)
+        return int(pid)
+    except Exception:
+        return 0
+
+
 def clipboard_owner() -> dict | None:
     """Who owns the X11 CLIPBOARD selection: {'pid', 'names', 'wm_class'} or None when unknown.
 
@@ -206,6 +229,8 @@ def clipboard_owner() -> dict | None:
                         pid = p
                         break
                 xres.XResClientIdsDestroy(num, ids)
+        if not pid:
+            pid = _net_wm_pid(lib, dpy, win)
         names = process_names(pid) if pid else []
         if not names and not wm_class:
             return None

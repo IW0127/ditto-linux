@@ -307,6 +307,11 @@ def cmd_doctor(args) -> int:
     print("auto-paste:")
     for ok, msg in Paster(settings).diagnose():
         print(f"  {'✓' if ok else '✗'} {msg}")
+    import ctypes.util
+    xres = bool(ctypes.util.find_library("XRes"))
+    if settings.ignore_apps:
+        print(f"ignore:     {settings.ignore_apps}" + ("" if xres else
+              "   ✗ needs libXRes to identify apps: sudo apt install libxres1"))
     rep = desktop.check(settings)
     print(f"shortcut:   {desktop.pretty(rep.binding)} ({rep.state})")
     for c in rep.conflicts:

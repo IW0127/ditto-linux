@@ -302,11 +302,7 @@ class DittoDaemon:
         """Replace this process with a fresh daemon (same PID, so service managers keep tracking it)."""
         argv = update.restart_argv(self.argv) if after_update else update.self_argv(self.argv)
         log.info("restarting: %s %s", argv[0], " ".join(self.argv))
-        logging.getLogger().removeHandler(self.problem_handler)
-        self.paster.stop()
-        self.server.close()
-        QLocalServer.removeServer(self.sock_path)
-        self.store.close()
+        self.close()
         logging.shutdown()
         os.execv(argv[0], argv)
 
@@ -428,13 +424,21 @@ class DittoDaemon:
             self.store.mark_pasted(clip_id, move_to_top=False)
         return ok
 
-    def quit(self):
-        log.info("ditto-linux %s stopping", __version__)
+    def close(self):
+        """Stop timers, helpers and the IPC server and close the database."""
         logging.getLogger().removeHandler(self.problem_handler)
+        for t in (self._poll, self._maint, self._update_timer):
+            t.stop()
+        self.window._search_timer.stop()
+        self.window.hide()
         self.paster.stop()
         self.server.close()
         QLocalServer.removeServer(self.sock_path)
         self.store.close()
+
+    def quit(self):
+        log.info("ditto-linux %s stopping", __version__)
+        self.close()
         self.app.quit()
 
     # ------------------------------------------------------------------ IPC

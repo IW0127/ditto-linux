@@ -105,6 +105,10 @@ class ClipboardMonitor(QObject):
         if owner_lookup is None and QGuiApplication.platformName() == "xcb":
             from .ui.x11 import clipboard_owner as owner_lookup
         self.owner_lookup = owner_lookup or (lambda: None)
+        if settings.ignore_apps and QGuiApplication.platformName() == "xcb":
+            import ctypes.util
+            if not ctypes.util.find_library("XRes"):
+                log.warning("'ignore apps' needs libXRes to identify apps (sudo apt install libxres1)")
         self.paused = False
         self.clipboard: QClipboard = QGuiApplication.clipboard()
         self._own: tuple[float, dict[str, bytes]] | None = None

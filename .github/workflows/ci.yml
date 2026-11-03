@@ -14,7 +14,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3-pyqt6 qt6-qpa-plugins libxcb-cursor0 \
-            xvfb xserver-xephyr libxtst6 x11-utils fakeroot dpkg-dev desktop-file-utils
+            xvfb xserver-xephyr libxtst6 libxres1 x11-utils fakeroot dpkg-dev desktop-file-utils
       - name: Tests (unit, UI, end-to-end on a private X server)
         run: ./run_tests.sh
       - name: Build packages
