@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Ditto
+GenericName=Clipboard Manager
+Comment=Clipboard history manager (Ditto for Linux)
+Exec=ditto-linux daemon
+Icon=ditto-linux
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;history;paste;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+Actions=Show;
+
+[Desktop Action Show]
+Name=Show Clipboard History
+Exec=ditto-linux show
