@@ -85,6 +85,14 @@ class Settings:
     def save(self) -> None:
         p = self.path()
         p.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        try:  # keep settings this version does not know (written by a newer or older version)
+            data = json.loads(p.read_text())
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            pass
+        data.update(asdict(self))
         tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(self), indent=2))
+        tmp.write_text(json.dumps(data, indent=2))
         tmp.replace(p)

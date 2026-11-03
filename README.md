@@ -35,6 +35,17 @@ ditto-linux daemon &                  # start now
 Or run it from the checkout: `python3 -m ditto_linux daemon`. Remove it with `scripts/install.sh --uninstall`
 (your history is kept).
 
+### Updating from 1.1.0 or older
+
+Versions before 1.2.0 cannot update themselves. On those systems run:
+
+```
+curl -fsSL https://raw.githubusercontent.com/IW0127/ditto-linux/main/scripts/update-ditto.sh | bash
+```
+
+It downloads the latest release, checks its checksum, installs it (with `sudo apt` on Ubuntu/Debian, per-user
+elsewhere), keeps your history and settings and restarts Ditto. From then on Ditto updates itself.
+
 ## Usage
 
 Copy things as usual. Press Ctrl+` (or click the tray icon, or run `ditto-linux show`) to open Quick Paste.

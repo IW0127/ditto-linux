@@ -447,6 +447,9 @@ class SettingsPersistenceTests(unittest.TestCase):
             Path(f"{d}/s.json").write_text('{"max_clips": "oops", "unknown": 1, "expire_days": 3}')
             loaded = Settings.load()
             self.assertEqual((loaded.max_clips, loaded.expire_days), (500, 3))
+            Path(f"{d}/s.json").write_text('{"setting_from_newer_version": "keep me"}')
+            Settings(max_clips=9).save()
+            self.assertIn("keep me", Path(f"{d}/s.json").read_text(), "unknown settings survive a save")
             Path(f"{d}/s.json").write_text("not json")
             self.assertEqual(Settings.load().max_clips, 500)
 
